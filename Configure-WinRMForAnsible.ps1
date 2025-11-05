@@ -82,6 +82,40 @@ if ($UseHTTPS) {
     $primaryIP = $ipList | Select-Object -First 1
     if (-not $primaryIP) { $primaryIP = $env:COMPUTERNAME }
 
+        # --- Self-healing cleanup for stale HTTPS listeners or mismatched certs ---
+    Write-Host "Checking for stale HTTPS listeners or mismatched certificates..." -ForegroundColor Gray
+    $hostname = $env:COMPUTERNAME
+
+    try {
+        $existingHttps = winrm enumerate winrm/config/listener 2>$null | Select-String "Transport = HTTPS"
+        if ($existingHttps) {
+            $stale = $false
+            $listenerDump = winrm enumerate winrm/config/listener 2>$null
+            foreach ($line in $listenerDump) {
+                if ($line -match "Transport = HTTPS" -and ($listenerDump -match "Hostname" -and $listenerDump -notmatch $hostname -and $listenerDump -notmatch $primaryIP)) {
+                    $stale = $true
+                }
+            }
+
+            if ($stale) {
+                Write-Host "Detected stale or mismatched HTTPS listener (hostname/IP mismatch). Removing..." -ForegroundColor Yellow
+                winrm delete winrm/config/Listener?Address=*+Transport=HTTPS 2>$null | Out-Null
+            }
+        }
+
+        # Remove old WinRM HTTPS certificates that no longer match hostname/IP
+        $oldCerts = Get-ChildItem -Path Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -like "WinRM HTTPS for Ansible*" }
+        foreach ($cert in $oldCerts) {
+            if ($cert.Subject -notmatch [regex]::Escape($hostname) -and $cert.Subject -notmatch [regex]::Escape($primaryIP)) {
+                Write-Host "Removing stale certificate $($cert.Subject) ($($cert.Thumbprint))..." -ForegroundColor DarkGray
+                Remove-Item -Path $cert.PSPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+        Write-Warning "Self-healing cleanup encountered an issue: $_"
+    }
+
+
     # Find existing HTTPS listener and bound thumbprint
     $listenerText = winrm enumerate winrm/config/listener 2>$null
     $httpsExists = $listenerText -match "Transport = HTTPS"
@@ -169,18 +203,38 @@ if ($UseHTTPS) {
         Write-Host "Firewall rule '$fwName' already exists. Skipping creation." -ForegroundColor Gray
     }
 
-    # Cleanup expired/unbound certs (safe)
+    # -------------------------------------------------------------------
+    # Safe cleanup: remove expired or unbound WinRM certificates
+    # -------------------------------------------------------------------
     try {
-        $boundThumbs = (winrm enumerate winrm/config/listener 2>$null | Select-String "CertificateThumbprint" | ForEach-Object { ($_ -split '=')[-1].Trim() })
-        Get-ChildItem -Path Cert:\LocalMachine\My | Where-Object {
-            ($_.Thumbprint -notin $boundThumbs) -and ($_.NotAfter -lt (Get-Date))
-        } | ForEach-Object {
-            Write-Host "Removing expired/unbound certificate: $($_.Thumbprint)" -ForegroundColor DarkGray
-            Remove-Item -Path $_.PSPath -Force -ErrorAction SilentlyContinue
-        }
+        Write-Host "Performing WinRM certificate store cleanup..." -ForegroundColor Gray
+        $boundThumbs = (winrm enumerate winrm/config/listener 2>$null |
+            Select-String "CertificateThumbprint" |
+            ForEach-Object { ($_ -split '=')[-1].Trim() }) | Where-Object { $_ }
+        
+        $removed = @()
+            
+        Get-ChildItem -Path Cert:\LocalMachine\My |
+            Where-Object {
+                $_.FriendlyName -eq "WinRM HTTPS for Ansible" -and (
+                    ($_.Thumbprint -notin $boundThumbs) -or
+                    ($_.NotAfter -lt (Get-Date))
+                )
+            } |
+            ForEach-Object {
+                Write-Host "Removing stale or expired certificate: $($_.Thumbprint)" -ForegroundColor DarkGray
+                Remove-Item -Path $_.PSPath -Force -ErrorAction SilentlyContinue
+                $removed += $_.Thumbprint
+            }
+        if ($removed.Count -eq 0) {
+            Write-Host "No stale or expired certificates found for cleanup." -ForegroundColor Gray
+        } else {
+            Write-Host "Removed certificates: $($removed -join ', ')" -ForegroundColor Gray
+        }   
     } catch {
         Write-Warning "Certificate cleanup encountered an issue: $_"
     }
+
 
 } else {
     Write-Host "Configuring HTTP listener on port $Port..." -ForegroundColor Gray
