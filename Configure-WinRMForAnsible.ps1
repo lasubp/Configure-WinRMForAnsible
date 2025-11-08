@@ -65,11 +65,71 @@ New-Item -Path $winrsPath -Force | Out-Null
 New-ItemProperty -Path $winrsPath -Name "AllowRemoteShellAccess" -Value 1 -Type DWord -Force | Out-Null
 
 # -------------------------------------------------------------------
+# Optimize certificate checks for offline/local networks (machine-wide)
+# Avoids slow CRL/OCSP online checks for self-signed certs (reduces boot delay)
+# -------------------------------------------------------------------
+try {
+    Write-Host "Applying machine-wide WinTrust optimization to reduce online CRL checks..." -ForegroundColor Gray
+    $wk = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing"
+    if (-not (Test-Path $wk)) { New-Item -Path $wk -Force | Out-Null }
+    # Value 146944 reduces strict online revocation checks (helps booting offline)
+    Set-ItemProperty -Path $wk -Name "State" -Value 146944 -Type DWord -Force
+} catch {
+    Write-Warning "Could not apply WinTrust optimization: $_"
+}
+
+# # -------------------------------------------------------------------
+# # Wait for WinRM service and network readiness to avoid race conditions at boot
+# # -------------------------------------------------------------------
+# Write-Host "Checking WinRM service and network readiness..." -ForegroundColor Gray
+# 
+# $waitMax = 180
+# $waitInterval = 6
+# $elapsed = 0
+# $ready = $false
+# 
+# # Function to check readiness
+# function Test-WinRMReady {
+#     $winrm = Get-Service -Name WinRM -ErrorAction SilentlyContinue
+#     $netReady = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+#                  Where-Object { $_.IPAddress -notmatch '169\.254' -and $_.IPAddress -ne '127.0.0.1' }).Count -gt 0
+#     return ($winrm -and $winrm.Status -eq 'Running' -and $netReady)
+# }
+# 
+# if (Test-WinRMReady) {
+#     Write-Host "WinRM and network already ready - skipping wait." -ForegroundColor Green
+# } else {
+#     Write-Host "Waiting for WinRM service and network stack to initialize (max $waitMax s)..." -ForegroundColor Yellow
+#     while ($elapsed -lt $waitMax) {
+#         if (Test-WinRMReady) {
+#             $ready = $true
+#             break
+#         }
+#         Start-Sleep -Seconds $waitInterval
+#         $elapsed += $waitInterval
+#     }
+# 
+#     if ($ready) {
+#         Write-Host "WinRM and network became ready (after $elapsed s)." -ForegroundColor Green
+#     } else {
+#         Write-Warning "Timed out waiting for WinRM/network readiness after $waitMax s - continuing anyway."
+#     }
+# }
+# 
+
+# -------------------------------------------------------------------
 # 2. Enable PS Remoting / WinRM service
 # -------------------------------------------------------------------
 Write-Host "Enabling PowerShell Remoting (forcing even on Public networks)..." -ForegroundColor Gray
-Set-Service -Name WinRM -StartupType Automatic
-Start-Service -Name WinRM
+
+# Ensure WinRM waits for HTTP.sys and Cryptographic services and uses delayed auto start
+Write-Host "Configuring WinRM service to depend on http/cryptsvc and to delayed-start..." -ForegroundColor Gray
+sc.exe config winrm depend= http/cryptsvc | Out-Null
+sc.exe config winrm start= delayed-auto | Out-Null
+
+# Start WinRM now (service will be delayed at next boot automatically)
+Start-Service -Name WinRM -ErrorAction SilentlyContinue
+
 
 # -------------------------------------------------------------------
 # 3. Create listener(s) (HTTPS optional) and manage HTTPS cert lifecycle
@@ -196,11 +256,10 @@ if ($UseHTTPS) {
     }
 
     # Add HTTPS firewall rule idempotently
-    $fwName = "WinRM HTTPS (5986)"
-    if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)) {
-        New-NetFirewallRule -DisplayName $fwName -Name "WinRM_HTTPS" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
+    if (-not (Get-NetFirewallRule -DisplayName $"WinRM HTTPS ($Port)" -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName "WinRM HTTPS ($Port)" -Name "WinRM_HTTPS" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
     } else {
-        Write-Host "Firewall rule '$fwName' already exists. Skipping creation." -ForegroundColor Gray
+        New-NetFirewallRule -DisplayName "WinRM HTTP ($Port)" -Name "WinRM_HTTP" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
     }
 
     # -------------------------------------------------------------------
