@@ -3,6 +3,26 @@ param(
     [string[]]$ScriptArgs
 )
 
+$ErrorActionPreference = "SilentlyContinue"
+
+# ---------------------------
+# Self-Elevation Check
+# ---------------------------
+function Is-Admin {
+    $currentUser = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    return $currentUser.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)
+}
+
+if (-not (Is-Admin)) {
+    # Rebuild argument string for elevation
+    $ArgsString = $ScriptArgs -join " "
+    $ElevateArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`" $ArgsString"
+    
+    Write-Host "Elevating to Administrator..." -ForegroundColor Yellow
+    Start-Process powershell.exe -WindowStyle Hidden -ArgumentList $ElevateArgs -Verb RunAs
+    exit
+}
+
 # ---------------------------
 # Settings
 # ---------------------------
@@ -14,7 +34,12 @@ $TaskName      = "ConfigureWinRMStartup"
 $ArgsString = $ScriptArgs -join " "
 
 Write-Host "Downloading main script..." -ForegroundColor Gray
-Invoke-WebRequest -Uri $MainScriptURL -OutFile $LocalScript -UseBasicParsing
+try {
+    Invoke-WebRequest -Uri $MainScriptURL -OutFile $LocalScript -UseBasicParsing -ErrorAction Stop
+} catch {
+    Write-Host "Failed to download script: $_" -ForegroundColor Red
+    exit 1
+}
 
 # ---------------------------
 # 1. Run immediately
@@ -29,17 +54,26 @@ Start-Process powershell.exe -WindowStyle Hidden `
 # ---------------------------
 
 # Task action: download fresh version + execute with same args
-$ActionCmd = @"
-Invoke-WebRequest '$MainScriptURL' -OutFile '$LocalScript' -UseBasicParsing;
-powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File '$LocalScript' $ArgsString
-"@
+$ActionCmd = "Invoke-WebRequest '$MainScriptURL' -OutFile '$LocalScript' -UseBasicParsing; powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File '$LocalScript' $ArgsString"
 
 $Action = New-ScheduledTaskAction -Execute "powershell.exe" `
-    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -Command `$`"$ActionCmd`$`""
+    -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$ActionCmd`""
 
 $Trigger = New-ScheduledTaskTrigger -AtStartup
 
-Write-Host "Creating scheduled task '$TaskName'..." -ForegroundColor Gray
-Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -RunLevel Highest -Force
+$Principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 
-Write-Host "Bootstrap complete." -ForegroundColor Green
+Write-Host "Creating scheduled task '$TaskName'..." -ForegroundColor Gray
+try {
+    Register-ScheduledTask -TaskName $TaskName `
+        -Action $Action `
+        -Trigger $Trigger `
+        -Principal $Principal `
+        -Force `
+        -ErrorAction Stop | Out-Null
+    
+    Write-Host "Bootstrap complete." -ForegroundColor Green
+} catch {
+    Write-Host "Failed to register scheduled task: $_" -ForegroundColor Red
+    exit 1
+}
