@@ -6,7 +6,7 @@ param(
 # ---------------------------
 # Settings
 # ---------------------------
-$MainScriptURL = "https://raw.githubusercontent.com/<your_repo>/<branch>/Configure-WinRMForAnsible.ps1"
+$MainScriptURL = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
 $LocalScript   = "$env:ProgramData\Configure-WinRMForAnsible.ps1"
 $TaskName      = "ConfigureWinRMStartup"
 
