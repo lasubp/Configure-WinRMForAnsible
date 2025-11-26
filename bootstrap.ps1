@@ -1,114 +1,86 @@
 param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$ScriptArgs
+    [switch]$UseHTTPS,
+    [string]$TrustedHosts
 )
 
-# -------------------------
-# Settings (you provided URL)
-# -------------------------
-$MainScriptURL   = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
-$InstallDir      = "C:\ProgramData\WinRM-Setup"
-$LocalScriptPath = Join-Path $InstallDir "Configure-WinRMForAnsible.ps1"
-$TaskName        = "ConfigureWinRM_Startup"
-$StartupLauncher = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\WinRM-Elevate-Launcher.ps1"
+# ---------------------------
+# URLs and paths
+# ---------------------------
+$MainURL   = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
+$LocalMain = "$env:ProgramData\Configure-WinRMForAnsible.ps1"
+$Launcher  = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\bootstrap-launch.cmd"
+$Task      = "WinRM-SelfHeal"
 
-# ---- Helper: join and quote args properly ----
-function Convert-ArgsToString([string[]]$arr) {
-    if (-not $arr) { return "" }
-    $out = $arr | ForEach-Object {
-        if ($_ -match '\s') { '"{0}"' -f $_ } else { $_ }
-    }
-    return ($out -join ' ')
+# ---------------------------
+# Helper functions
+# ---------------------------
+function Test-IsSystem {
+    return ([Environment]::UserName -eq "SYSTEM")
 }
-$ArgsString = Convert-ArgsToString $ScriptArgs
-
-# ---- Admin check ----
-$IsAdmin = (
-    New-Object Security.Principal.WindowsPrincipal(
+function Test-IsAdmin {
+    $p = New-Object Security.Principal.WindowsPrincipal(
         [Security.Principal.WindowsIdentity]::GetCurrent()
     )
-).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
 
-if (-not $IsAdmin) {
-    # Try immediate UAC elevation first
-    try {
-        $thisPath = $MyInvocation.MyCommand.Definition
-        $elevArgs = "-ExecutionPolicy Bypass -NoProfile -File `"$thisPath`" $ArgsString"
+# Collect all parameters exactly as user typed
+$ForwardArgs = $MyInvocation.UnboundArguments -join ' '
 
-        # Start elevated process (this will show UAC)
-        Start-Process -FilePath "powershell.exe" -ArgumentList $elevArgs -Verb RunAs -WindowStyle Hidden -ErrorAction Stop
-        Write-Output "Requested elevation via UAC. If user accepted, elevated instance will continue."
-        # If elevation started, exit this non-elevated process.
-        exit 0
-    } catch {
-        # If immediate elevation failed (user cancelled or can't create elevated process),
-        # create a Startup launcher so the next login will show the UAC prompt.
-        Write-Warning "Immediate elevation did not start (user cancelled or blocked). Creating Startup launcher to retry on next login."
-        $launcherArgs = $ArgsString
-        $launcherScript = @"
-Start-Process -FilePath 'powershell.exe' -ArgumentList '-ExecutionPolicy Bypass -NoProfile -File `"$thisPath`" $launcherArgs' -Verb RunAs -WindowStyle Hidden
+# ---------------------------
+# SYSTEM → run MAIN script
+# ---------------------------
+if (Test-IsSystem) {
+    Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
+    powershell.exe -ExecutionPolicy Bypass -File $LocalMain $ForwardArgs
+    exit
+}
+
+# ---------------------------
+# Non-admin → create retry + request UAC
+# ---------------------------
+if (-not (Test-IsAdmin)) {
+
+    # Auto-retry launcher
+    $cmd = @"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" $ForwardArgs
 "@
+    Set-Content -Path $Launcher -Value $cmd -Encoding ASCII
 
-        try {
-            New-Item -ItemType Directory -Path (Split-Path $StartupLauncher) -Force | Out-Null
-            Set-Content -Path $StartupLauncher -Value $launcherScript -Encoding UTF8
-            Write-Output "Startup launcher created: $StartupLauncher"
-            Write-Output "It will trigger UAC at next user login. Ask the user to log off/log on or reboot if you want the elevated run now."
-        } catch {
-            Write-Warning "Failed to create startup launcher: $_"
-        }
-        exit 0
-    }
+    # Trigger UAC
+    Start-Process powershell.exe -Verb RunAs `
+        -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" $ForwardArgs" `
+        -WindowStyle Hidden
+
+    exit
 }
 
-# -------------------------
-# Elevated section (runs as Admin or SYSTEM)
-# -------------------------
+# ---------------------------
+# ADMIN → create SYSTEM task running the MAIN script
+# ---------------------------
+if (Test-IsAdmin) {
 
-# If previously created, remove Startup launcher (we are elevated now)
-if (Test-Path $StartupLauncher) {
-    try { Remove-Item -Path $StartupLauncher -Force -ErrorAction SilentlyContinue } catch {}
+    # Remove launcher after successful UAC
+    Remove-Item $Launcher -Force -ErrorAction SilentlyContinue
+
+    # Download main script fresh before installing task
+    Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
+
+    # Scheduled task ACTION → now runs *main script*, not bootstrap
+    $A = New-ScheduledTaskAction -Execute "powershell.exe" `
+         -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$LocalMain`" $ForwardArgs"
+
+    # Trigger at every boot
+    $T = New-ScheduledTaskTrigger -AtStartup
+
+    Register-ScheduledTask -TaskName $Task `
+                           -Action $A `
+                           -Trigger $T `
+                           -RunLevel Highest `
+                           -Force
+
+    # Run immediately (SYSTEM context)
+    Start-ScheduledTask -TaskName $Task
+
+    exit
 }
-
-# Ensure install folder exists
-New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-
-# Download main script (overwrite)
-try {
-    Invoke-WebRequest -Uri $MainScriptURL -OutFile $LocalScriptPath -UseBasicParsing -ErrorAction Stop
-} catch {
-    Write-Error "Failed to download Configure-WinRMForAnsible script from $MainScriptURL`nError: $_"
-    exit 1
-}
-
-# Create SYSTEM scheduled task that downloads latest script on boot and runs it with same args
-try {
-    # build the command executed by the scheduled task (careful with quoting)
-    $innerCommand = "Invoke-WebRequest -Uri '$MainScriptURL' -OutFile '$LocalScriptPath' -UseBasicParsing; & '$LocalScriptPath' $ArgsString"
-    # we wrap innerCommand in & { ... } to run multiple statements
-    $taskArgument = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"& { $innerCommand }`""
-
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $taskArgument
-    $trigger = New-ScheduledTaskTrigger -AtStartup
-
-    # Principal: SYSTEM with highest runlevel
-    $principal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
-
-    # Register the task (force overwrite if exists)
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Principal $principal -Force
-
-} catch {
-    Write-Error "Failed to create SYSTEM scheduled task '$TaskName'. Error: $_"
-    # continue — we still try to run the script once now
-}
-
-# Run the main script once immediately (elevated)
-try {
-    Write-Output "Executing main script now with arguments: $ArgsString"
-    & powershell.exe -ExecutionPolicy Bypass -NoProfile -File $LocalScriptPath $ScriptArgs
-} catch {
-    Write-Warning "Running main script failed: $_"
-}
-
-Write-Output "Bootstrap finished (elevated). Scheduled TASK: $TaskName (runs at startup as SYSTEM)."
-exit 0
