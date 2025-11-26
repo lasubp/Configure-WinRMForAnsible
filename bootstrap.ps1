@@ -62,7 +62,7 @@ setlocal enableextensions
 
 set PSARGS=$ForwardArgs
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ^
   "& { & `"$LocalBootstrap`" %PSARGS% }"
 
 endlocal
