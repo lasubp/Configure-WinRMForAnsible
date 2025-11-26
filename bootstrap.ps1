@@ -6,18 +6,18 @@ param(
 # ---------------------------
 # URLs and paths
 # ---------------------------
-$MainURL   = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
-$BootstrapURL = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/bootstrap.ps1"
+$MainURL        = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
+$BootstrapURL   = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/bootstrap.ps1"
 
-$LocalDir  = "$env:ProgramData\WinRMForAnsible"
+$LocalDir       = "$env:ProgramData\WinRMForAnsible"
 $LocalBootstrap = "$LocalDir\bootstrap.ps1"
-$LocalMain = "$LocalDir\Configure-WinRMForAnsible.ps1"
+$LocalMain      = "$LocalDir\Configure-WinRMForAnsible.ps1"
 
-$StartupDir = [Environment]::GetFolderPath("Startup")
-$Launcher  = Join-Path $StartupDir "winrm-bootstrap-launch.cmd"
-$Task      = "WinRM-SelfHeal"
+$StartupDir     = [Environment]::GetFolderPath("Startup")
+$Launcher       = Join-Path $StartupDir "winrm-bootstrap-launch.cmd"
+$Task           = "WinRM-SelfHeal"
 
-# Ensure folder exists
+# Ensure all dirs exist
 if (-not (Test-Path $LocalDir)) {
     New-Item -ItemType Directory -Path $LocalDir -Force | Out-Null
 }
@@ -35,20 +35,23 @@ function Test-IsAdmin {
     return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-# Forward arguments exactly as user typed, quoted safely
-$ForwardArgs = $MyInvocation.UnboundArguments |
-    ForEach-Object { '"' + ($_ -replace '"', '\"') + '"' } |
-    Join-String ' '
+# Proper argument forwarding (PS5.1 compatible)
+$ForwardArgs = ""
+foreach ($a in $MyInvocation.UnboundArguments) {
+    $escaped = $a.Replace('"', '\"')
+    $ForwardArgs += '"' + $escaped + '" '
+}
+$ForwardArgs = $ForwardArgs.Trim()
 
 # ---------------------------
-# Ensure local bootstrap exists (first-run from GitHub)
+# First-run: ensure local bootstrap exists
 # ---------------------------
 if (-not (Test-Path $LocalBootstrap)) {
     Invoke-WebRequest -Uri $BootstrapURL -OutFile $LocalBootstrap -UseBasicParsing -ErrorAction Stop
 }
 
 # ---------------------------
-# SYSTEM → run MAIN script
+# SYSTEM → run main script
 # ---------------------------
 if (Test-IsSystem) {
     Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
@@ -57,18 +60,17 @@ if (Test-IsSystem) {
 }
 
 # ---------------------------
-# Non-admin → save launcher + request UAC
+# NON-ADMIN → create launcher + trigger UAC
 # ---------------------------
 if (-not (Test-IsAdmin)) {
 
-    # Launcher points to the *local ProgramData bootstrap*
+    # Write launcher
     $cmd = @"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$LocalBootstrap`" $ForwardArgs
 "@
-
     Set-Content -Path $Launcher -Value $cmd -Encoding ASCII
 
-    # Trigger UAC, now pointing to *local copy*
+    # UAC prompt
     Start-Process powershell.exe -Verb RunAs `
         -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$LocalBootstrap`" $ForwardArgs" `
         -WindowStyle Hidden
@@ -77,21 +79,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$LocalBootstrap`" $For
 }
 
 # ---------------------------
-# ADMIN → create SYSTEM task running the main script
+# ADMIN → install SYSTEM task running MAIN script
 # ---------------------------
 if (Test-IsAdmin) {
 
-    # Remove launcher – UAC succeeded
+    # Remove launcher (user approved UAC)
     Remove-Item $Launcher -Force -ErrorAction SilentlyContinue
 
-    # Download main script fresh
+    # Pull latest main script
     Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
 
-    # ACTION → now runs *main script*, not bootstrap
+    # Scheduled task → runs MAIN script, not bootstrap
     $A = New-ScheduledTaskAction -Execute "powershell.exe" `
          -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$LocalMain`" $ForwardArgs"
 
-    # Trigger at every boot
     $T = New-ScheduledTaskTrigger -AtStartup
 
     Register-ScheduledTask -TaskName $Task `
