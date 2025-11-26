@@ -64,11 +64,20 @@ if (Test-IsSystem) {
 # ---------------------------
 if (-not (Test-IsAdmin)) {
 
-    # Write launcher
-    $cmd = @"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$LocalBootstrap`" $ForwardArgs
+    # Auto-retry launcher (safe quoting for CMD)
+$cmd = @"
+@echo off
+setlocal enableextensions
+
+set PSARGS=$ForwardArgs
+
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+  "& { & `"$LocalBootstrap`" %PSARGS% }"
+
+endlocal
 "@
-    Set-Content -Path $Launcher -Value $cmd -Encoding ASCII
+
+Set-Content -Path $Launcher -Value $cmd -Encoding ASCII
 
     # UAC prompt
     Start-Process powershell.exe -Verb RunAs `
