@@ -284,10 +284,21 @@ $portNum = $Port
 $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
 if ($existing) {
     # ensure the rule has the expected port and profiles
-    Get-NetFirewallRule -DisplayName $ruleName | Set-NetFirewallRule -Profile Domain,Private,Public -ErrorAction SilentlyContinue
+    Get-NetFirewallRule -DisplayName $ruleName |
+        Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow -ErrorAction SilentlyContinue |
+        Out-Null
     # try to set proper port via associated NetFirewallPortFilter (skip if complex)
 } else {
-    New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $portNum -Action Allow -Profile Domain,Private,Public -Description "Allow WinRM traffic for Ansible on all network profiles" | Out-Null
+    New-NetFirewallRule `
+    -Name $ruleName `
+    -DisplayName $ruleName `
+    -Direction Inbound `
+    -Protocol TCP `
+    -LocalPort $portNum `
+    -Action Allow `
+    -Profile Domain,Private,Public `
+    -Description "Allow WinRM traffic for Ansible on all network profiles" |
+    Out-Null
 }
 
 # -------------------------------------------------------------------
