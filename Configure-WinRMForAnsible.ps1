@@ -216,12 +216,12 @@ if ($UseHTTPS) {
         }
     }
 
-    # Add HTTPS firewall rule idempotently
-    if (-not (Get-NetFirewallRule -DisplayName $"WinRM HTTPS ($Port)" -ErrorAction SilentlyContinue)) {
-        New-NetFirewallRule -DisplayName "WinRM HTTPS ($Port)" -Name "WinRM_HTTPS" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    } else {
-        New-NetFirewallRule -DisplayName "WinRM HTTP ($Port)" -Name "WinRM_HTTP" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    }
+    # # Add HTTPS firewall rule idempotently
+    # if (-not (Get-NetFirewallRule -DisplayName $"WinRM HTTPS ($Port)" -ErrorAction SilentlyContinue)) {
+    #     New-NetFirewallRule -DisplayName "WinRM HTTPS ($Port)" -Name "WinRM_HTTPS" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
+    # } else {
+    #     New-NetFirewallRule -DisplayName "WinRM HTTP ($Port)" -Name "WinRM_HTTP" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
+    # }
 
     # -------------------------------------------------------------------
     # Safe cleanup: remove expired or unbound WinRM certificates
