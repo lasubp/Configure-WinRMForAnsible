@@ -32,7 +32,7 @@ Write-Host "=== Configuring WinRM for Ansible  (Public network compatible) ===" 
 # -------------------------------------------------------------------
 # 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
 # -------------------------------------------------------------------
-function Ensure-WinRMFirewallRule {
+function Set-WinRMFirewallRule {
     param (
         [Parameter(Mandatory)]
         [ValidateSet('HTTP','HTTPS')]
@@ -266,7 +266,7 @@ if ($UseHTTPS) {
         }
     }
 
-    Ensure-WinRMFirewallRule -Transport HTTPS -Port $Port
+    Set-WinRMFirewallRule -Transport HTTPS -Port $Port
 
     # -------------------------------------------------------------------
     # Safe cleanup: remove expired or unbound WinRM certificates
@@ -311,7 +311,7 @@ if ($UseHTTPS) {
     }
 
     # Add HTTP firewall rule idempotently
-    Ensure-WinRMFirewallRule -Transport HTTP -Port $Port
+    Set-WinRMFirewallRule -Transport HTTP -Port $Port
 
 }
 
