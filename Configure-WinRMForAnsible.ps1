@@ -106,6 +106,14 @@ if ($AllowUnencrypted) {
 New-Item -Path $winrsPath -Force | Out-Null
 New-ItemProperty -Path $winrsPath -Name "AllowRemoteShellAccess" -Value 1 -Type DWord -Force | Out-Null
 
+New-ItemProperty `
+  -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+  -Name 'LocalAccountTokenFilterPolicy' `
+  -Value 1 `
+  -PropertyType DWORD `
+  -Force
+
+
 # -------------------------------------------------------------------
 # Optimize certificate checks for offline/local networks (machine-wide)
 # Avoids slow CRL/OCSP online checks for self-signed certs (reduces boot delay)
