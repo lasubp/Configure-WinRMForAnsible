@@ -30,6 +30,48 @@ if (-not $Port) {
 Write-Host "=== Configuring WinRM for Ansible  (Public network compatible) ===" -ForegroundColor Cyan
 
 # -------------------------------------------------------------------
+# 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
+# -------------------------------------------------------------------
+function Set-WinRMFirewallRule {
+    param (
+        [Parameter(Mandatory)]
+        [ValidateSet('HTTP','HTTPS')]
+        [string]$Transport,
+
+        [Parameter(Mandatory)]
+        [int]$Port
+    )
+
+    $ruleName = "WinRM-$Transport-$Port"
+
+    $existingRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
+
+    if ($existingRule) {
+        Write-Host "Firewall rule '$ruleName' already exists. Ensuring correct settings..." -ForegroundColor Gray
+        $existingRule |
+            Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow |
+            Out-Null
+
+        Get-NetFirewallPortFilter -AssociatedNetFirewallRule $existingRule |
+            Set-NetFirewallPortFilter -LocalPort $Port -Protocol TCP |
+            Out-Null
+    }
+    else {
+        Write-Host "Creating firewall rule '$ruleName'..." -ForegroundColor Gray
+        New-NetFirewallRule `
+            -Name $ruleName `
+            -DisplayName $ruleName `
+            -Description "Allow WinRM $Transport ($Port) for Ansible" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort $Port `
+            -Action Allow `
+            -Profile Domain,Private,Public |
+            Out-Null
+    }
+}
+
+# -------------------------------------------------------------------
 # 0. Fix: handle systems with Public network profiles early
 # -------------------------------------------------------------------
 if (-not $SkipNetworkFix) {
@@ -64,6 +106,14 @@ if ($AllowUnencrypted) {
 New-Item -Path $winrsPath -Force | Out-Null
 New-ItemProperty -Path $winrsPath -Name "AllowRemoteShellAccess" -Value 1 -Type DWord -Force | Out-Null
 
+New-ItemProperty `
+  -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+  -Name 'LocalAccountTokenFilterPolicy' `
+  -Value 1 `
+  -PropertyType DWORD `
+  -Force
+
+
 # -------------------------------------------------------------------
 # Optimize certificate checks for offline/local networks (machine-wide)
 # Avoids slow CRL/OCSP online checks for self-signed certs (reduces boot delay)
@@ -77,45 +127,6 @@ try {
 } catch {
     Write-Warning "Could not apply WinTrust optimization: $_"
 }
-
-# # -------------------------------------------------------------------
-# # Wait for WinRM service and network readiness to avoid race conditions at boot
-# # -------------------------------------------------------------------
-# Write-Host "Checking WinRM service and network readiness..." -ForegroundColor Gray
-# 
-# $waitMax = 180
-# $waitInterval = 6
-# $elapsed = 0
-# $ready = $false
-# 
-# # Function to check readiness
-# function Test-WinRMReady {
-#     $winrm = Get-Service -Name WinRM -ErrorAction SilentlyContinue
-#     $netReady = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-#                  Where-Object { $_.IPAddress -notmatch '169\.254' -and $_.IPAddress -ne '127.0.0.1' }).Count -gt 0
-#     return ($winrm -and $winrm.Status -eq 'Running' -and $netReady)
-# }
-# 
-# if (Test-WinRMReady) {
-#     Write-Host "WinRM and network already ready - skipping wait." -ForegroundColor Green
-# } else {
-#     Write-Host "Waiting for WinRM service and network stack to initialize (max $waitMax s)..." -ForegroundColor Yellow
-#     while ($elapsed -lt $waitMax) {
-#         if (Test-WinRMReady) {
-#             $ready = $true
-#             break
-#         }
-#         Start-Sleep -Seconds $waitInterval
-#         $elapsed += $waitInterval
-#     }
-# 
-#     if ($ready) {
-#         Write-Host "WinRM and network became ready (after $elapsed s)." -ForegroundColor Green
-#     } else {
-#         Write-Warning "Timed out waiting for WinRM/network readiness after $waitMax s - continuing anyway."
-#     }
-# }
-# 
 
 # -------------------------------------------------------------------
 # 2. Enable PS Remoting / WinRM service
@@ -255,12 +266,7 @@ if ($UseHTTPS) {
         }
     }
 
-    # Add HTTPS firewall rule idempotently
-    if (-not (Get-NetFirewallRule -DisplayName $"WinRM HTTPS ($Port)" -ErrorAction SilentlyContinue)) {
-        New-NetFirewallRule -DisplayName "WinRM HTTPS ($Port)" -Name "WinRM_HTTPS" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    } else {
-        New-NetFirewallRule -DisplayName "WinRM HTTP ($Port)" -Name "WinRM_HTTP" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    }
+    Set-WinRMFirewallRule -Transport HTTPS -Port $Port
 
     # -------------------------------------------------------------------
     # Safe cleanup: remove expired or unbound WinRM certificates
@@ -305,28 +311,8 @@ if ($UseHTTPS) {
     }
 
     # Add HTTP firewall rule idempotently
-    $fwName = "WinRM HTTP (5985)"
-    if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)) {
-        New-NetFirewallRule -DisplayName $fwName -Name "WinRM_HTTP" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    } else {
-        Write-Host "Firewall rule '$fwName' already exists. Skipping creation." -ForegroundColor Gray
-    }
-}
+    Set-WinRMFirewallRule -Transport HTTP -Port $Port
 
-# -------------------------------------------------------------------
-# 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
-# -------------------------------------------------------------------
-Write-Host "Ensuring firewall rule applies to all profiles..." -ForegroundColor Gray
-$ruleName = if ($UseHTTPS) { "WinRM HTTPS Inbound" } else { "WinRM HTTP Inbound" }
-$portNum = $Port
-
-$existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-if ($existing) {
-    # ensure the rule has the expected port and profiles
-    Get-NetFirewallRule -DisplayName $ruleName | Set-NetFirewallRule -Profile Domain,Private,Public -ErrorAction SilentlyContinue
-    # try to set proper port via associated NetFirewallPortFilter (skip if complex)
-} else {
-    New-NetFirewallRule -Name $ruleName -DisplayName $ruleName -Direction Inbound -Protocol TCP -LocalPort $portNum -Action Allow -Profile Domain,Private,Public -Description "Allow WinRM traffic for Ansible on all network profiles" | Out-Null
 }
 
 # -------------------------------------------------------------------
