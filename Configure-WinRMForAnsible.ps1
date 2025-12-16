@@ -30,6 +30,48 @@ if (-not $Port) {
 Write-Host "=== Configuring WinRM for Ansible  (Public network compatible) ===" -ForegroundColor Cyan
 
 # -------------------------------------------------------------------
+# 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
+# -------------------------------------------------------------------
+function Ensure-WinRMFirewallRule {
+    param (
+        [Parameter(Mandatory)]
+        [ValidateSet('HTTP','HTTPS')]
+        [string]$Transport,
+
+        [Parameter(Mandatory)]
+        [int]$Port
+    )
+
+    $ruleName = "WinRM-$Transport-$Port"
+
+    $existingRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
+
+    if ($existingRule) {
+        Write-Host "Firewall rule '$ruleName' already exists. Ensuring correct settings..." -ForegroundColor Gray
+        $existingRule |
+            Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow |
+            Out-Null
+
+        Get-NetFirewallPortFilter -AssociatedNetFirewallRule $existingRule |
+            Set-NetFirewallPortFilter -LocalPort $Port -Protocol TCP |
+            Out-Null
+    }
+    else {
+        Write-Host "Creating firewall rule '$ruleName'..." -ForegroundColor Gray
+        New-NetFirewallRule `
+            -Name $ruleName `
+            -DisplayName $ruleName `
+            -Description "Allow WinRM $Transport ($Port) for Ansible" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort $Port `
+            -Action Allow `
+            -Profile Domain,Private,Public |
+            Out-Null
+    }
+}
+
+# -------------------------------------------------------------------
 # 0. Fix: handle systems with Public network profiles early
 # -------------------------------------------------------------------
 if (-not $SkipNetworkFix) {
@@ -216,12 +258,7 @@ if ($UseHTTPS) {
         }
     }
 
-    # # Add HTTPS firewall rule idempotently
-    # if (-not (Get-NetFirewallRule -DisplayName $"WinRM HTTPS ($Port)" -ErrorAction SilentlyContinue)) {
-    #     New-NetFirewallRule -DisplayName "WinRM HTTPS ($Port)" -Name "WinRM_HTTPS" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    # } else {
-    #     New-NetFirewallRule -DisplayName "WinRM HTTP ($Port)" -Name "WinRM_HTTP" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    # }
+    Ensure-WinRMFirewallRule -Transport HTTPS -Port $Port
 
     # -------------------------------------------------------------------
     # Safe cleanup: remove expired or unbound WinRM certificates
@@ -266,39 +303,8 @@ if ($UseHTTPS) {
     }
 
     # Add HTTP firewall rule idempotently
-    $fwName = "WinRM HTTP (5985)"
-    if (-not (Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)) {
-        New-NetFirewallRule -DisplayName $fwName -Name "WinRM_HTTP" -Protocol TCP -LocalPort $Port -Direction Inbound -Action Allow -Profile Any | Out-Null
-    } else {
-        Write-Host "Firewall rule '$fwName' already exists. Skipping creation." -ForegroundColor Gray
-    }
-}
+    Ensure-WinRMFirewallRule -Transport HTTP -Port $Port
 
-# -------------------------------------------------------------------
-# 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
-# -------------------------------------------------------------------
-Write-Host "Ensuring firewall rule applies to all profiles..." -ForegroundColor Gray
-$ruleName = if ($UseHTTPS) { "WinRM HTTPS Inbound" } else { "WinRM HTTP Inbound" }
-$portNum = $Port
-
-$existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-if ($existing) {
-    # ensure the rule has the expected port and profiles
-    Get-NetFirewallRule -DisplayName $ruleName |
-        Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow -ErrorAction SilentlyContinue |
-        Out-Null
-    # try to set proper port via associated NetFirewallPortFilter (skip if complex)
-} else {
-    New-NetFirewallRule `
-    -Name $ruleName `
-    -DisplayName $ruleName `
-    -Direction Inbound `
-    -Protocol TCP `
-    -LocalPort $portNum `
-    -Action Allow `
-    -Profile Domain,Private,Public `
-    -Description "Allow WinRM traffic for Ansible on all network profiles" |
-    Out-Null
 }
 
 # -------------------------------------------------------------------
