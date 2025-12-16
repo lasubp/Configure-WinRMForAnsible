@@ -78,45 +78,6 @@ try {
     Write-Warning "Could not apply WinTrust optimization: $_"
 }
 
-# # -------------------------------------------------------------------
-# # Wait for WinRM service and network readiness to avoid race conditions at boot
-# # -------------------------------------------------------------------
-# Write-Host "Checking WinRM service and network readiness..." -ForegroundColor Gray
-# 
-# $waitMax = 180
-# $waitInterval = 6
-# $elapsed = 0
-# $ready = $false
-# 
-# # Function to check readiness
-# function Test-WinRMReady {
-#     $winrm = Get-Service -Name WinRM -ErrorAction SilentlyContinue
-#     $netReady = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-#                  Where-Object { $_.IPAddress -notmatch '169\.254' -and $_.IPAddress -ne '127.0.0.1' }).Count -gt 0
-#     return ($winrm -and $winrm.Status -eq 'Running' -and $netReady)
-# }
-# 
-# if (Test-WinRMReady) {
-#     Write-Host "WinRM and network already ready - skipping wait." -ForegroundColor Green
-# } else {
-#     Write-Host "Waiting for WinRM service and network stack to initialize (max $waitMax s)..." -ForegroundColor Yellow
-#     while ($elapsed -lt $waitMax) {
-#         if (Test-WinRMReady) {
-#             $ready = $true
-#             break
-#         }
-#         Start-Sleep -Seconds $waitInterval
-#         $elapsed += $waitInterval
-#     }
-# 
-#     if ($ready) {
-#         Write-Host "WinRM and network became ready (after $elapsed s)." -ForegroundColor Green
-#     } else {
-#         Write-Warning "Timed out waiting for WinRM/network readiness after $waitMax s - continuing anyway."
-#     }
-# }
-# 
-
 # -------------------------------------------------------------------
 # 2. Enable PS Remoting / WinRM service
 # -------------------------------------------------------------------
