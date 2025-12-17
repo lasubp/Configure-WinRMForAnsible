@@ -352,7 +352,7 @@ if ($TrustedHosts) {
 Restart-Service WinRM -Force
 
 Write-Host "=== WinRM configuration complete ($(if ($UseHTTPS) {'HTTPS'} else {'HTTP'})) (Public network compatible) ===" -ForegroundColor Green
-Write-Host "Port: $portNum"
+Write-Host "Port: $Port"
 Write-Host "TrustedHosts: $TrustedHosts"
 Write-Host "Unencrypted: $AllowUnencrypted"
 Write-Host "Auth: Basic=$true, Negotiate=$true, CredSSP=$EnableCredSSP"
