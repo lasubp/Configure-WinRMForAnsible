@@ -1,17 +1,17 @@
 param(
-    [switch]$UseHTTPS,
-    [string]$TrustedHosts
+    [Parameter(ValueFromRemainingArguments = $true)]
+    $RemainingArgs
 )
 
 # -----------------------------------------
 # CONFIGURATION
 # -----------------------------------------
-$MainURL      = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
-$WorkDir      = "$env:ProgramData\Configure-WinRM"
-$LocalMain    = "$WorkDir\Configure-WinRMForAnsible.ps1"
+$MainURL        = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
+$WorkDir        = "$env:ProgramData\Configure-WinRM"
+$LocalMain      = "$WorkDir\Configure-WinRMForAnsible.ps1"
 $LocalBootstrap = "$WorkDir\bootstrap.ps1"
-$Launcher     = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\bootstrap-launch.cmd"
-$TaskName     = "WinRM-SelfHeal"
+$Launcher       = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\bootstrap-launch.cmd"
+$TaskName       = "WinRM-SelfHeal"
 
 # Ensure working directory exists:
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
@@ -25,17 +25,41 @@ if ($MyInvocation.MyCommand.Path -ne $LocalBootstrap) {
 # HELPERS
 # -----------------------------------------
 function Test-IsSystem {
-    return ([Environment]::UserName -eq "SYSTEM")
+    [Environment]::UserName -eq "SYSTEM"
 }
+
 function Test-IsAdmin {
     $p = New-Object Security.Principal.WindowsPrincipal(
         [Security.Principal.WindowsIdentity]::GetCurrent()
     )
-    return $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-# Forward raw parameters (as typed by user or parent process)
-$ForwardArgs = $MyInvocation.UnboundArguments -join ' '
+function Build-ForwardArgs {
+    param([hashtable]$Bound)
+
+    $out = foreach ($kv in $Bound.GetEnumerator()) {
+        $name = $kv.Key
+        $val  = $kv.Value
+
+        if ($val -is [switch] -or $val -is [bool]) {
+            if ($val) { "-$name" }
+        }
+        elseif ($val -is [array]) {
+            foreach ($v in $val) {
+                "-$name `"$($v -replace '"','`"')`""
+            }
+        }
+        else {
+            "-$name `"$($val -replace '"','`"')`""
+        }
+    }
+
+    $out -join ' '
+}
+
+# Capture *all* bound parameters dynamically
+$ForwardArgs = Build-ForwardArgs -Bound $PSBoundParameters
 
 # -----------------------------------------
 # SYSTEM → RUN MAIN SCRIPT
@@ -43,9 +67,10 @@ $ForwardArgs = $MyInvocation.UnboundArguments -join ' '
 if (Test-IsSystem) {
     try {
         Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
-        powershell.exe -ExecutionPolicy Bypass -File $LocalMain $ForwardArgs
+        powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File $LocalMain $ForwardArgs
     } catch {
-        # SYSTEM should not display errors
+        # SYSTEM should be silent
     }
     exit
 }
@@ -55,28 +80,25 @@ if (Test-IsSystem) {
 # -----------------------------------------
 if (-not (Test-IsAdmin)) {
 
-    # Create safe CMD launcher
     $cmd = @"
 @echo off
-setlocal enableextensions
+setlocal
 
-set PSARGS=$ForwardArgs
-
-powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ^
-  "& { & `"$LocalBootstrap`" %PSARGS% }"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden ^
+  -File "$LocalBootstrap" $ForwardArgs
 
 endlocal
 "@
+
     Set-Content -Path $Launcher -Value $cmd -Encoding ASCII
 
     # Try invoking UAC — hide "cancelled by user" errors
     try {
-        Start-Sleep -Milliseconds 150
         Start-Process powershell.exe -Verb RunAs `
             -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$LocalBootstrap`" $ForwardArgs" `
             -WindowStyle Hidden -ErrorAction Stop
     } catch {
-        # User declined UAC — no red errors shown
+        # User declined UAC — intentionally silent
     }
 
     exit
@@ -93,23 +115,23 @@ if (Test-IsAdmin) {
     # Download main script fresh
     Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
 
-    # Scheduled task: SYSTEM context running MAIN SCRIPT
-    $A = New-ScheduledTaskAction -Execute "powershell.exe" `
+    $Action = New-ScheduledTaskAction `
+        -Execute "powershell.exe" `
         -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$LocalMain`" $ForwardArgs"
 
-    $T = New-ScheduledTaskTrigger -AtStartup
+    $Trigger = New-ScheduledTaskTrigger -AtStartup
 
-    $P = New-ScheduledTaskPrincipal `
+    $Principal = New-ScheduledTaskPrincipal `
         -UserId "SYSTEM" `
         -LogonType ServiceAccount `
         -RunLevel Highest
 
-    Register-ScheduledTask -TaskName $TaskName `
-                        -Action $A `
-                        -Trigger $T `
-                        -Principal $P `
-                        -Force
-
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $Action `
+        -Trigger $Trigger `
+        -Principal $Principal `
+        -Force
 
     # Run once immediately
     Start-ScheduledTask -TaskName $TaskName
