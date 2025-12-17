@@ -99,11 +99,17 @@ if (Test-IsAdmin) {
 
     $T = New-ScheduledTaskTrigger -AtStartup
 
+    $P = New-ScheduledTaskPrincipal `
+        -UserId "SYSTEM" `
+        -LogonType ServiceAccount `
+        -RunLevel Highest
+
     Register-ScheduledTask -TaskName $TaskName `
-                           -Action $A `
-                           -Trigger $T `
-                           -RunLevel Highest `
-                           -Force
+                        -Action $A `
+                        -Trigger $T `
+                        -Principal $P `
+                        -Force
+
 
     # Run once immediately
     Start-ScheduledTask -TaskName $TaskName
