@@ -35,31 +35,14 @@ function Test-IsAdmin {
     $p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Build-ForwardArgs {
-    param([hashtable]$Bound)
-
-    $out = foreach ($kv in $Bound.GetEnumerator()) {
-        $name = $kv.Key
-        $val  = $kv.Value
-
-        if ($val -is [switch] -or $val -is [bool]) {
-            if ($val) { "-$name" }
-        }
-        elseif ($val -is [array]) {
-            foreach ($v in $val) {
-                "-$name `"$($v -replace '"','`"')`""
-            }
-        }
-        else {
-            "-$name `"$($val -replace '"','`"')`""
-        }
+# Raw, tokenized arguments as PowerShell received them
+$ForwardArgs = $args | ForEach-Object {
+    if ($_ -match '\s') {
+        '"' + ($_ -replace '"','`"') + '"'
+    } else {
+        $_
     }
-
-    $out -join ' '
-}
-
-# Capture *all* bound parameters dynamically
-$ForwardArgs = Build-ForwardArgs -Bound $PSBoundParameters
+} -join ' '
 
 # -----------------------------------------
 # SYSTEM → RUN MAIN SCRIPT
