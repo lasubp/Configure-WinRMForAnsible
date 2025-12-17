@@ -1,8 +1,3 @@
-param(
-    [Parameter(ValueFromRemainingArguments = $true)]
-    $RemainingArgs
-)
-
 # -----------------------------------------
 # CONFIGURATION
 # -----------------------------------------
@@ -36,13 +31,15 @@ function Test-IsAdmin {
 }
 
 # Raw, tokenized arguments as PowerShell received them
-$ForwardArgs = $args | ForEach-Object {
-    if ($_ -match '\s') {
-        '"' + ($_ -replace '"','`"') + '"'
-    } else {
-        $_
+$ForwardArgs = (
+    $args | ForEach-Object {
+        if ($_ -match '\s') {
+            '"' + ($_ -replace '"','`"') + '"'
+        } else {
+            $_
+        }
     }
-} -join ' '
+) -join ' '
 
 # -----------------------------------------
 # SYSTEM → RUN MAIN SCRIPT
