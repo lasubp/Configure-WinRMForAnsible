@@ -1,6 +1,6 @@
 # Configure-WinRMForAnsible.ps1
 
-### Automated WinRM setup for Windows clients managed by Ansible (HTTP & HTTPS)
+## Automated WinRM setup for Windows clients managed by Ansible (HTTP & HTTPS)
 
 This PowerShell script automatically configures Windows systems for remote management with **Ansible over WinRM**, supporting both **HTTP (port 5985)** and **HTTPS (port 5986)**.
 It runs fully unattended, fixes Public network restrictions, and can be safely re-run anytime.
@@ -93,7 +93,7 @@ all:
 **Test connection:**
 
 ```bash
-ansible windows -i inventory.yml -m win_ping
+ansible -i inventory.yml windows -m win_ping
 ```
 
 ---
