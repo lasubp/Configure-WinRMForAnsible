@@ -93,26 +93,93 @@ if (-not $SkipNetworkFix) {
 # -------------------------------------------------------------------
 # 1. Apply persistent WinRM policy keys
 # -------------------------------------------------------------------
-Write-Verbose "Applying WinRM policy registry keys..."
-$basePath = "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service"
+
+function Ensure-RegistryValue {
+    param (
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [object]$Value,
+
+        [Parameter(Mandatory)]
+        [Microsoft.Win32.RegistryValueKind]$Type
+    )
+
+    try {
+        if (-not (Test-Path $Path)) {
+            Write-Verbose "Creating registry path: $Path"
+            New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
+        }
+
+        $currentValue = (Get-ItemProperty `
+            -Path $Path `
+            -Name $Name `
+            -ErrorAction SilentlyContinue
+        ).$Name
+
+        if ($currentValue -ne $Value) {
+            Write-Verbose "Setting $Path\$Name = $Value"
+            New-ItemProperty `
+                -Path $Path `
+                -Name $Name `
+                -Value $Value `
+                -PropertyType $Type `
+                -Force `
+                -ErrorAction Stop | Out-Null
+        }
+        else {
+            Write-Verbose "$Path\$Name already set correctly"
+        }
+    }
+    catch {
+        Write-Error "Failed to configure registry value '$Name' at '$Path': $($_.Exception.Message)"
+        throw
+    }
+}
+
+Write-Verbose "Checking WinRM policy registry keys..."
+
+$basePath  = "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service"
 $winrsPath = "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service\WinRS"
 
-New-Item -Path $basePath -Force | Out-Null
-New-ItemProperty -Path $basePath -Name "AllowBasic" -Value 1 -Type DWord -Force | Out-Null
-New-ItemProperty -Path $basePath -Name "AllowAutoConfig" -Value 1 -Type DWord -Force | Out-Null
+# --- WinRM Service policies ---
+Ensure-RegistryValue `
+    -Path $basePath `
+    -Name "AllowBasic" `
+    -Value 1 `
+    -Type DWord
+
+Ensure-RegistryValue `
+    -Path $basePath `
+    -Name "AllowAutoConfig" `
+    -Value 1 `
+    -Type DWord
+
 if ($AllowUnencrypted) {
-    New-ItemProperty -Path $basePath -Name "AllowUnencryptedTraffic" -Value 1 -Type DWord -Force | Out-Null
+    Ensure-RegistryValue `
+        -Path $basePath `
+        -Name "AllowUnencryptedTraffic" `
+        -Value 1 `
+        -Type DWord
 }
-New-Item -Path $winrsPath -Force | Out-Null
-New-ItemProperty -Path $winrsPath -Name "AllowRemoteShellAccess" -Value 1 -Type DWord -Force | Out-Null
 
-New-ItemProperty `
-  -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
-  -Name 'LocalAccountTokenFilterPolicy' `
-  -Value 1 `
-  -PropertyType DWORD `
-  -Force
+# --- WinRS policies ---
+Ensure-RegistryValue `
+    -Path $winrsPath `
+    -Name "AllowRemoteShellAccess" `
+    -Value 1 `
+    -Type DWord
 
+# --- UAC local token filter ---
+Ensure-RegistryValue `
+    -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
+    -Name 'LocalAccountTokenFilterPolicy' `
+    -Value 1 `
+    -Type DWord
 
 # -------------------------------------------------------------------
 # Optimize certificate checks for offline/local networks (machine-wide)
