@@ -20,14 +20,13 @@ param(
     [switch]$AllowUnencrypted = $true,
     [switch]$SkipNetworkFix = $false,
     [switch]$EnableCredSSP = $false,
-    [switch]$Verbose
 )
 
 if (-not $Port) {
     $Port = if ($UseHTTPS) { 5986 } else { 5985 }
 }
 
-Write-Verbose "=== Configuring WinRM for Ansible  (Public network compatible) ==="
+Write-Host "=== Configuring WinRM for Ansible ===" -ForegroundColor Cyan
 
 # -------------------------------------------------------------------
 # 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
@@ -47,7 +46,7 @@ function Set-WinRMFirewallRule {
     $existingRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
 
     if ($existingRule) {
-        Write-Verbose "Firewall rule '$ruleName' already exists. Ensuring correct settings..."
+        Write-Host "Firewall rule '$ruleName' already exists. Ensuring correct settings..."
         $existingRule |
             Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow |
             Out-Null
@@ -57,7 +56,7 @@ function Set-WinRMFirewallRule {
             Out-Null
     }
     else {
-        Write-Verbose "Creating firewall rule '$ruleName'..."
+        Write-Host "Creating firewall rule '$ruleName'..."
         New-NetFirewallRule `
             -Name $ruleName `
             -DisplayName $ruleName `
@@ -75,11 +74,11 @@ function Set-WinRMFirewallRule {
 # 0. Fix: handle systems with Public network profiles early
 # -------------------------------------------------------------------
 if (-not $SkipNetworkFix) {
-    Write-Verbose "Checking network profile..."
+    Write-Host "Checking network profile..."
     $publicNetworks = Get-NetConnectionProfile | Where-Object {$_.NetworkCategory -eq "Public"}
     if ($publicNetworks) {
         foreach ($p in $publicNetworks) {
-            Write-Verbose "Public network detected for '$($p.Name)'. Switching to Private to allow WinRM configuration..."
+            Write-Host "Public network detected for '$($p.Name)'. Switching to Private to allow WinRM configuration..." -ForegroundColor Yellow
             try {
                 Set-NetConnectionProfile -Name $p.Name -NetworkCategory Private -ErrorAction Stop
             } catch {
@@ -94,7 +93,7 @@ if (-not $SkipNetworkFix) {
 # 1. Apply persistent WinRM policy keys
 # -------------------------------------------------------------------
 
-function Ensure-RegistryValue {
+function Set-RegistryValue {
     param (
         [Parameter(Mandatory)]
         [string]$Path,
@@ -111,7 +110,7 @@ function Ensure-RegistryValue {
 
     try {
         if (-not (Test-Path $Path)) {
-            Write-Verbose "Creating registry path: $Path"
+            Write-Host "Creating registry path: $Path"
             New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
         }
 
@@ -122,7 +121,7 @@ function Ensure-RegistryValue {
         ).$Name
 
         if ($currentValue -ne $Value) {
-            Write-Verbose "Setting $Path\$Name = $Value"
+            Write-Host "Setting $Path\$Name = $Value"
             New-ItemProperty `
                 -Path $Path `
                 -Name $Name `
@@ -132,7 +131,7 @@ function Ensure-RegistryValue {
                 -ErrorAction Stop | Out-Null
         }
         else {
-            Write-Verbose "$Path\$Name already set correctly"
+            Write-Host "$Path\$Name already set correctly"
         }
     }
     catch {
@@ -141,26 +140,26 @@ function Ensure-RegistryValue {
     }
 }
 
-Write-Verbose "Checking WinRM policy registry keys..."
+Write-Host "Checking WinRM policy registry keys..."
 
 $basePath  = "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service"
 $winrsPath = "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service\WinRS"
 
 # --- WinRM Service policies ---
-Ensure-RegistryValue `
+Set-RegistryValue `
     -Path $basePath `
     -Name "AllowBasic" `
     -Value 1 `
     -Type DWord
 
-Ensure-RegistryValue `
+Set-RegistryValue `
     -Path $basePath `
     -Name "AllowAutoConfig" `
     -Value 1 `
     -Type DWord
 
 if ($AllowUnencrypted) {
-    Ensure-RegistryValue `
+    Set-RegistryValue `
         -Path $basePath `
         -Name "AllowUnencryptedTraffic" `
         -Value 1 `
@@ -168,14 +167,14 @@ if ($AllowUnencrypted) {
 }
 
 # --- WinRS policies ---
-Ensure-RegistryValue `
+Set-RegistryValue `
     -Path $winrsPath `
     -Name "AllowRemoteShellAccess" `
     -Value 1 `
     -Type DWord
 
 # --- UAC local token filter ---
-Ensure-RegistryValue `
+Set-RegistryValue `
     -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
     -Name 'LocalAccountTokenFilterPolicy' `
     -Value 1 `
@@ -186,7 +185,7 @@ Ensure-RegistryValue `
 # Avoids slow CRL/OCSP online checks for self-signed certs (reduces boot delay)
 # -------------------------------------------------------------------
 try {
-    Write-Verbose "Applying machine-wide WinTrust optimization to reduce online CRL checks..."
+    Write-Host "Applying machine-wide WinTrust optimization to reduce online CRL checks..."
     $wk = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing"
     if (-not (Test-Path $wk)) { New-Item -Path $wk -Force | Out-Null }
     # Value 146944 reduces strict online revocation checks (helps booting offline)
@@ -198,10 +197,10 @@ try {
 # -------------------------------------------------------------------
 # 2. Enable PS Remoting / WinRM service
 # -------------------------------------------------------------------
-Write-Verbose "Enabling PowerShell Remoting (forcing even on Public networks)..."
+Write-Host "Enabling PowerShell Remoting (forcing even on Public networks)..."
 
 # Ensure WinRM waits for HTTP.sys and Cryptographic services and uses delayed auto start
-Write-Verbose "Configuring WinRM service to depend on http/cryptsvc and to delayed-start..."
+Write-Host "Configuring WinRM service to depend on http/cryptsvc and to delayed-start..."
 sc.exe config winrm depend= http/cryptsvc | Out-Null
 sc.exe config winrm start= delayed-auto | Out-Null
 
@@ -213,7 +212,7 @@ Start-Service -Name WinRM -ErrorAction SilentlyContinue
 # 3. Create listener(s) (HTTPS optional) and manage HTTPS cert lifecycle
 # -------------------------------------------------------------------
 if ($UseHTTPS) {
-    Write-Verbose "Configuring HTTPS listener on port $Port..."
+    Write-Host "Configuring HTTPS listener on port $Port..."
 
     # Determine primary IP and hostnames to include in cert
     $ipList = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '169\.254' -and $_.PrefixOrigin -ne 'WellKnown' -and $_.IPAddress -ne '127.0.0.1' }).IPAddress
@@ -221,7 +220,7 @@ if ($UseHTTPS) {
     if (-not $primaryIP) { $primaryIP = $env:COMPUTERNAME }
 
         # --- Self-healing cleanup for stale HTTPS listeners or mismatched certs ---
-    Write-Verbose "Checking for stale HTTPS listeners or mismatched certificates..."
+    Write-Host "Checking for stale HTTPS listeners or mismatched certificates..."
     $hostname = $env:COMPUTERNAME
 
     try {
@@ -236,7 +235,7 @@ if ($UseHTTPS) {
             }
 
             if ($stale) {
-                Write-Verbose "Detected stale or mismatched HTTPS listener (hostname/IP mismatch). Removing..."
+                Write-Host "Detected stale or mismatched HTTPS listener (hostname/IP mismatch). Removing..."
                 winrm delete winrm/config/Listener?Address=*+Transport=HTTPS 2>$null | Out-Null
             }
         }
@@ -245,7 +244,7 @@ if ($UseHTTPS) {
         $oldCerts = Get-ChildItem -Path Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -like "WinRM HTTPS for Ansible*" }
         foreach ($cert in $oldCerts) {
             if ($cert.Subject -notmatch [regex]::Escape($hostname) -and $cert.Subject -notmatch [regex]::Escape($primaryIP)) {
-                Write-Verbose "Removing stale certificate $($cert.Subject) ($($cert.Thumbprint))..."
+                Write-Host "Removing stale certificate $($cert.Subject) ($($cert.Thumbprint))..." -ForegroundColor DarkGray
                 Remove-Item -Path $cert.PSPath -Force -ErrorAction SilentlyContinue
             }
         }
@@ -270,12 +269,12 @@ if ($UseHTTPS) {
     if ($currentThumb) {
         $cert = Get-ChildItem -Path "Cert:\LocalMachine\My\$currentThumb" -ErrorAction SilentlyContinue
         if (-not $cert) {
-            Write-Verbose "Bound certificate not found in store (thumb=$currentThumb) -> regenerating."
+            Write-Host "Bound certificate not found in store (thumb=$currentThumb) -> regenerating." -ForegroundColor Yellow
             $regenNeeded = $true
         } else {
             # Check expiry
             if ($cert.NotAfter -lt (Get-Date)) {
-                Write-Verbose "Bound certificate is expired (NotAfter: $($cert.NotAfter)). Regeneration required."
+                Write-Host "Bound certificate is expired (NotAfter: $($cert.NotAfter)). Regeneration required." -ForegroundColor Yellow
                 $regenNeeded = $true
             } else {
                 # Check if cert subject or SAN matches primary IP or computer name
@@ -289,20 +288,20 @@ if ($UseHTTPS) {
                 } catch { }
 
                 if (-not $subjectMatches) {
-                    Write-Verbose "Certificate CN/SAN does not match hostname or IP. Regeneration required."
+                    Write-Host "Certificate CN/SAN does not match hostname or IP. Regeneration required." -ForegroundColor Yellow
                     $regenNeeded = $true
                 } else {
-                    Write-Verbose "Existing HTTPS certificate is valid and matches host."
+                    Write-Host "Existing HTTPS certificate is valid and matches host." -ForegroundColor Green
                 }
             }
         }
     } else {
-        Write-Verbose "No HTTPS listener or bound certificate found -> creating new certificate and listener."
+        Write-Host "No HTTPS listener or bound certificate found -> creating new certificate and listener." -ForegroundColor Yellow
         $regenNeeded = $true
     }
 
     if ($regenNeeded) {
-        Write-Verbose "Creating new self-signed certificate for WinRM HTTPS (CN/SAN: $primaryIP, $($env:COMPUTERNAME))..."
+        Write-Host "Creating new self-signed certificate for WinRM HTTPS (CN/SAN: $primaryIP, $($env:COMPUTERNAME))..." -ForegroundColor Yellow
         # Create cert including primaryIP and computername as DNS names (works for many environments)
         # Note: if you need IP to be in SAN explicitly in your environment, replace or extend this creation with advanced TextExtension usage.
         $dnsNames = @()
@@ -315,17 +314,17 @@ if ($UseHTTPS) {
 
         # Create the HTTPS listener bound to the certificate thumbprint and port
         $thumb = $cert.Thumbprint
-        Write-Verbose "Binding new certificate (thumb: $thumb) to WinRM HTTPS listener..."
+        Write-Host "Binding new certificate (thumb: $thumb) to WinRM HTTPS listener..." -ForegroundColor Yellow
         & winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$primaryIP`"; CertificateThumbprint=`"$thumb`";Port=`"$Port`"}" | Out-Null
     } else {
-        Write-Verbose "Ensuring HTTPS listener exists and is bound to the certificate..."
+        Write-Host "Ensuring HTTPS listener exists and is bound to the certificate..."
         if (-not $httpsExists) {
             # create listener and bind current cert if available, else regenerate
             if ($cert) {
                 $thumb = $cert.Thumbprint
                 & winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$primaryIP`"; CertificateThumbprint=`"$thumb`";Port=`"$Port`"}" | Out-Null
             } else {
-                Write-Verbose "No cert available to bind -> creating new cert..."
+                Write-Host "No cert available to bind -> creating new cert..." -ForegroundColor DarkGray
                 $cert = New-SelfSignedCertificate -DnsName @($primaryIP,$env:COMPUTERNAME) -CertStoreLocation "Cert:\LocalMachine\My" -FriendlyName "WinRM HTTPS for Ansible" -NotAfter (Get-Date).AddYears(5)
                 $thumb = $cert.Thumbprint
                 & winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$primaryIP`"; CertificateThumbprint=`"$thumb`";Port=`"$Port`"}" | Out-Null
@@ -339,7 +338,7 @@ if ($UseHTTPS) {
     # Safe cleanup: remove expired or unbound WinRM certificates
     # -------------------------------------------------------------------
     try {
-        Write-Verbose "Performing WinRM certificate store cleanup..."
+        Write-Host "Performing WinRM certificate store cleanup..."
         $boundThumbs = (winrm enumerate winrm/config/listener 2>$null |
             Select-String "CertificateThumbprint" |
             ForEach-Object { ($_ -split '=')[-1].Trim() }) | Where-Object { $_ }
@@ -354,14 +353,14 @@ if ($UseHTTPS) {
                 )
             } |
             ForEach-Object {
-                Write-Verbose "Removing stale or expired certificate: $($_.Thumbprint)"
+                Write-Host "Removing stale or expired certificate: $($_.Thumbprint)"
                 Remove-Item -Path $_.PSPath -Force -ErrorAction SilentlyContinue
                 $removed += $_.Thumbprint
             }
         if ($removed.Count -eq 0) {
-            Write-Verbose "No stale or expired certificates found for cleanup."
+            Write-Host "No stale or expired certificates found for cleanup."
         } else {
-            Write-Verbose "Removed certificates: $($removed -join ', ')"
+            Write-Host "Removed certificates: $($removed -join ', ')"
         }   
     } catch {
         Write-Warning "Certificate cleanup encountered an issue: $_"
@@ -369,12 +368,12 @@ if ($UseHTTPS) {
 
 
 } else {
-    Write-Verbose "Configuring HTTP listener on port $Port..."
+    Write-Host "Configuring HTTP listener on port $Port..."
     $httpListener = winrm enumerate winrm/config/listener 2>$null | Select-String "Transport = HTTP"
     if (-not $httpListener) {
         & winrm create winrm/config/Listener?Address=*+Transport=HTTP "@{Port=`"$Port`"}" | Out-Null
     } else {
-        Write-Verbose "HTTP listener already exists."
+        Write-Host "HTTP listener already exists."
     }
 
     # Add HTTP firewall rule idempotently
@@ -385,7 +384,7 @@ if ($UseHTTPS) {
 # -------------------------------------------------------------------
 # 5. Configure authentication and encryption
 # -------------------------------------------------------------------
-Write-Verbose "Configuring authentication settings..."
+Write-Host "Configuring authentication settings..."
 Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
 Set-Item WSMan:\localhost\Service\Auth\Negotiate -Value $true
 if ($EnableCredSSP) {
@@ -409,7 +408,7 @@ if ($AllowUnencrypted -and -not $UseHTTPS) {
 # 6. TrustedHosts configuration
 # -------------------------------------------------------------------
 if ($TrustedHosts) {
-    Write-Verbose "Setting TrustedHosts to '$TrustedHosts'..."
+    Write-Host "Setting TrustedHosts to '$TrustedHosts'..."
     Set-Item WSMan:\localhost\Client\TrustedHosts -Value $TrustedHosts -Force
 }
 
