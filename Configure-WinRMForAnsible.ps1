@@ -19,7 +19,7 @@ param(
     [int]$Port,
     [switch]$AllowUnencrypted = $true,
     [switch]$SkipNetworkFix = $false,
-    [switch]$EnableCredSSP = $false,
+    [switch]$EnableCredSSP = $false
 )
 
 if (-not $Port) {
