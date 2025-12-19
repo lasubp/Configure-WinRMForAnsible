@@ -197,16 +197,39 @@ try {
 # -------------------------------------------------------------------
 # 2. Enable PS Remoting / WinRM service
 # -------------------------------------------------------------------
-Write-Host "Enabling PowerShell Remoting (forcing even on Public networks)..."
+Write-Host "Ensuring WinRM service is correctly configured..."
 
-# Ensure WinRM waits for HTTP.sys and Cryptographic services and uses delayed auto start
-Write-Host "Configuring WinRM service to depend on http/cryptsvc and to delayed-start..."
-sc.exe config winrm depend= http/cryptsvc | Out-Null
-sc.exe config winrm start= delayed-auto | Out-Null
+try {
+    $changes = @()
 
-# Start WinRM now (service will be delayed at next boot automatically)
-Start-Service -Name WinRM -ErrorAction SilentlyContinue
+    # Always enforce dependencies (cannot be reliably detected)
+    sc.exe config winrm depend= http/cryptsvc | Out-Null
 
+    $svc = Get-CimInstance Win32_Service -Filter "Name='WinRM'" -ErrorAction Stop
+
+    # --- Startup type (Delayed Auto) ---
+    if ($svc.StartMode -ne 'Auto' -or -not $svc.DelayedAutoStart) {
+        sc.exe config winrm start= delayed-auto | Out-Null
+        $changes += 'startup type'
+    }
+
+    # --- Running state ---
+    if ($svc.State -ne 'Running') {
+        Start-Service WinRM -ErrorAction Stop
+        $changes += 'service started'
+    }
+
+    # --- Output ---
+    if ($changes.Count -eq 0) {
+        Write-Host "WinRM already configured and running"
+    }
+    else {
+        Write-Host "WinRM updated (" + ($changes -join ', ') + ")"
+    }
+}
+catch {
+    Write-Warning "WinRM configuration failed: $($_.Exception.Message)"
+}
 
 # -------------------------------------------------------------------
 # 3. Create listener(s) (HTTPS optional) and manage HTTPS cert lifecycle
@@ -383,27 +406,67 @@ if ($UseHTTPS) {
 }
 
 # -------------------------------------------------------------------
-# 5. Configure authentication and encryption
+# 5. Configure WinRM authentication & transport settings
 # -------------------------------------------------------------------
-Write-Host "Configuring authentication settings..."
-Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
-Set-Item WSMan:\localhost\Service\Auth\Negotiate -Value $true
-if ($EnableCredSSP) {
-    Enable-WSManCredSSP -Role Server -Force
-    Set-Item WSMan:\localhost\Service\Auth\CredSSP -Value $true
-} else {
-    # ensure credssp is off if not requested
-    try { Set-Item WSMan:\localhost\Service\Auth\CredSSP -Value $false } catch {}
-}
+Write-Host "Ensuring WinRM authentication settings are correctly configured..."
 
-if ($AllowUnencrypted -and -not $UseHTTPS) {
-    try {
-        Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true
-    } catch {
-        Write-Warning "Could not set AllowUnencrypted via WSMan provider: $_"
-        # fallback: set registry policy (already set above) — continue
+try {
+    $changes = @()
+
+    # Helper: set WSMan value only if different
+    function Set-WSManValue {
+        param (
+            [Parameter(Mandatory)]
+            [string] $Path,
+
+            [Parameter(Mandatory)]
+            [bool] $DesiredValue,
+
+            [string] $ChangeLabel
+        )
+
+        $current = Get-Item $Path -ErrorAction Stop
+
+        if ([bool]$current.Value -ne $DesiredValue) {
+            Set-Item $Path -Value $DesiredValue -ErrorAction Stop
+            if ($ChangeLabel) { $changes += $ChangeLabel }
+        }
+    }
+
+    # --- Authentication mechanisms ---
+    Set-WSManValue 'WSMan:\localhost\Service\Auth\Basic'     $true 'Basic auth'
+    Set-WSManValue 'WSMan:\localhost\Service\Auth\Negotiate' $true 'Negotiate auth'
+
+    if ($EnableCredSSP) {
+        Enable-WSManCredSSP -Role Server -Force | Out-Null
+        Set-WSManValue 'WSMan:\localhost\Service\Auth\CredSSP' $true 'CredSSP'
+    }
+    else {
+        Set-WSManValue 'WSMan:\localhost\Service\Auth\CredSSP' $false 'CredSSP disabled'
+    }
+
+    # --- Unencrypted traffic ---
+    if ($AllowUnencrypted -and -not $UseHTTPS) {
+        try {
+            Set-WSManValue 'WSMan:\localhost\Service\AllowUnencrypted' $true 'AllowUnencrypted'
+        }
+        catch {
+            Write-Warning "Could not set AllowUnencrypted via WSMan provider; continuing"
+        }
+    }
+
+    # --- Output ---
+    if ($changes.Count -eq 0) {
+        Write-Host "WinRM authentication settings already correct"
+    }
+    else {
+        Write-Host "WinRM authentication updated (" + ($changes -join ', ') + ")"
     }
 }
+catch {
+    Write-Warning "WinRM authentication configuration failed: $($_.Exception.Message)"
+}
+
 
 # -------------------------------------------------------------------
 # 6. TrustedHosts configuration
