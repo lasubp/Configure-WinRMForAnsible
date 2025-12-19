@@ -96,32 +96,32 @@ if (-not $SkipNetworkFix) {
 function Set-RegistryValue {
     param (
         [Parameter(Mandatory)]
-        [string]$Path,
+        [string] $Path,
 
         [Parameter(Mandatory)]
-        [string]$Name,
+        [string] $Name,
 
         [Parameter(Mandatory)]
-        [object]$Value,
+        [object] $Value,
 
         [Parameter(Mandatory)]
-        [Microsoft.Win32.RegistryValueKind]$Type
+        [Microsoft.Win32.RegistryValueKind] $Type,
+
+        [string] $ChangeLabel
     )
 
     try {
         if (-not (Test-Path $Path)) {
-            Write-Host "Creating registry path: $Path"
             New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
         }
 
-        $currentValue = (Get-ItemProperty `
+        $current = (Get-ItemProperty `
             -Path $Path `
             -Name $Name `
             -ErrorAction SilentlyContinue
         ).$Name
 
-        if ($currentValue -ne $Value) {
-            Write-Host "Setting $Path\$Name = $Value"
+        if ($current -ne $Value) {
             New-ItemProperty `
                 -Path $Path `
                 -Name $Name `
@@ -129,9 +129,8 @@ function Set-RegistryValue {
                 -PropertyType $Type `
                 -Force `
                 -ErrorAction Stop | Out-Null
-        }
-        else {
-            Write-Host "$Path\$Name already set correctly"
+
+            if ($ChangeLabel) { $script:RegChanges += $ChangeLabel }
         }
     }
     catch {
@@ -140,45 +139,60 @@ function Set-RegistryValue {
     }
 }
 
-Write-Host "Checking WinRM policy registry keys..."
+Write-Host "Ensuring WinRM policy registry settings are correctly configured..."
 
-$basePath  = "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service"
-$winrsPath = "HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service\WinRS"
+$script:RegChanges = @()
+
+$basePath  = 'HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service'
+$winrsPath = 'HKLM:\Software\Policies\Microsoft\Windows\WinRM\Service\WinRS'
 
 # --- WinRM Service policies ---
 Set-RegistryValue `
     -Path $basePath `
-    -Name "AllowBasic" `
+    -Name 'AllowBasic' `
     -Value 1 `
-    -Type DWord
+    -Type DWord `
+    -ChangeLabel 'AllowBasic'
 
 Set-RegistryValue `
     -Path $basePath `
-    -Name "AllowAutoConfig" `
+    -Name 'AllowAutoConfig' `
     -Value 1 `
-    -Type DWord
+    -Type DWord `
+    -ChangeLabel 'AllowAutoConfig'
 
 if ($AllowUnencrypted) {
     Set-RegistryValue `
         -Path $basePath `
-        -Name "AllowUnencryptedTraffic" `
+        -Name 'AllowUnencryptedTraffic' `
         -Value 1 `
-        -Type DWord
+        -Type DWord `
+        -ChangeLabel 'AllowUnencryptedTraffic'
 }
 
 # --- WinRS policies ---
 Set-RegistryValue `
     -Path $winrsPath `
-    -Name "AllowRemoteShellAccess" `
+    -Name 'AllowRemoteShellAccess' `
     -Value 1 `
-    -Type DWord
+    -Type DWord `
+    -ChangeLabel 'AllowRemoteShellAccess'
 
 # --- UAC local token filter ---
 Set-RegistryValue `
     -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' `
     -Name 'LocalAccountTokenFilterPolicy' `
     -Value 1 `
-    -Type DWord
+    -Type DWord `
+    -ChangeLabel 'LocalAccountTokenFilterPolicy'
+
+# --- Output ---
+if ($RegChanges.Count -eq 0) {
+    Write-Host "WinRM policy registry settings already correct"
+}
+else {
+    Write-Host "WinRM policy registry updated (" + ($RegChanges -join ', ') + ")"
+}
 
 # -------------------------------------------------------------------
 # Optimize certificate checks for offline/local networks (machine-wide)
