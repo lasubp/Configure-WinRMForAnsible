@@ -214,12 +214,6 @@ Start-Service -Name WinRM -ErrorAction SilentlyContinue
 if ($UseHTTPS) {
     Write-Host "Configuring HTTPS listener on port $Port..."
 
-    # potentially nned to remove
-    # # Determine primary IP and hostnames to include in cert
-    # $ipList = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '169\.254' -and $_.PrefixOrigin -ne 'WellKnown' -and $_.IPAddress -ne '127.0.0.1' }).IPAddress
-    # $primaryIP = $ipList | Select-Object -First 1
-    # if (-not $primaryIP) { $primaryIP = $env:COMPUTERNAME }
-
         # --- Self-healing cleanup for stale HTTPS listeners or mismatched certs ---
         Write-Host "Ensuring WinRM HTTPS listener and certificate are valid..." -ForegroundColor Cyan
 
@@ -298,7 +292,6 @@ if ($UseHTTPS) {
             Write-Host "Creating new self-signed certificate for WinRM HTTPS..." -ForegroundColor Yellow
 
             $dnsNames = @($hostname)
-            # if ($primaryIP) { $dnsNames += $primaryIP } #  commented out to avoid IP in SAN, potentially nned to remove
 
             $cert = New-SelfSignedCertificate `
                 -DnsName $dnsNames `
@@ -324,18 +317,6 @@ if ($UseHTTPS) {
             } catch {}
 
             $listenerHostname = $hostname
-            
-            # potentially nned to remove
-            ## Prefer IP only if cert SAN explicitly contains it
-            #try {
-            #    $san = ($cert.Extensions |
-            #        Where-Object { $_.Oid.FriendlyName -eq 'Subject Alternative Name' }
-            #    ).Format($false)
-#
-            #    if ($primaryIP -and $san -match [regex]::Escape($primaryIP)) {
-            #        $listenerHostname = $primaryIP
-            #    }
-            #} catch {}
 
             winrm create winrm/config/Listener?Address=*+Transport=HTTPS `
                 "@{Hostname=`"$listenerHostname`";CertificateThumbprint=`"$($cert.Thumbprint)`";Port=`"$Port`"}" |
