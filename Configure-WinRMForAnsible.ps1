@@ -197,16 +197,39 @@ try {
 # -------------------------------------------------------------------
 # 2. Enable PS Remoting / WinRM service
 # -------------------------------------------------------------------
-Write-Host "Enabling PowerShell Remoting (forcing even on Public networks)..."
+Write-Host "Ensuring WinRM service is correctly configured..."
 
-# Ensure WinRM waits for HTTP.sys and Cryptographic services and uses delayed auto start
-Write-Host "Configuring WinRM service to depend on http/cryptsvc and to delayed-start..."
-sc.exe config winrm depend= http/cryptsvc | Out-Null
-sc.exe config winrm start= delayed-auto | Out-Null
+try {
+    $changes = @()
 
-# Start WinRM now (service will be delayed at next boot automatically)
-Start-Service -Name WinRM -ErrorAction SilentlyContinue
+    # Always enforce dependencies (cannot be reliably detected)
+    sc.exe config winrm depend= http/cryptsvc | Out-Null
 
+    $svc = Get-CimInstance Win32_Service -Filter "Name='WinRM'" -ErrorAction Stop
+
+    # --- Startup type (Delayed Auto) ---
+    if ($svc.StartMode -ne 'Auto' -or -not $svc.DelayedAutoStart) {
+        sc.exe config winrm start= delayed-auto | Out-Null
+        $changes += 'startup type'
+    }
+
+    # --- Running state ---
+    if ($svc.State -ne 'Running') {
+        Start-Service WinRM -ErrorAction Stop
+        $changes += 'service started'
+    }
+
+    # --- Output ---
+    if ($changes.Count -eq 0) {
+        Write-Host "WinRM already configured and running"
+    }
+    else {
+        Write-Host "WinRM updated (" + ($changes -join ', ') + ")"
+    }
+}
+catch {
+    Write-Warning "WinRM configuration failed: $($_.Exception.Message)"
+}
 
 # -------------------------------------------------------------------
 # 3. Create listener(s) (HTTPS optional) and manage HTTPS cert lifecycle
