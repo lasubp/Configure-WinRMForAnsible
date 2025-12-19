@@ -406,27 +406,67 @@ if ($UseHTTPS) {
 }
 
 # -------------------------------------------------------------------
-# 5. Configure authentication and encryption
+# 5. Configure WinRM authentication & transport settings
 # -------------------------------------------------------------------
-Write-Host "Configuring authentication settings..."
-Set-Item WSMan:\localhost\Service\Auth\Basic -Value $true
-Set-Item WSMan:\localhost\Service\Auth\Negotiate -Value $true
-if ($EnableCredSSP) {
-    Enable-WSManCredSSP -Role Server -Force
-    Set-Item WSMan:\localhost\Service\Auth\CredSSP -Value $true
-} else {
-    # ensure credssp is off if not requested
-    try { Set-Item WSMan:\localhost\Service\Auth\CredSSP -Value $false } catch {}
-}
+Write-Host "Ensuring WinRM authentication settings are correctly configured..."
 
-if ($AllowUnencrypted -and -not $UseHTTPS) {
-    try {
-        Set-Item WSMan:\localhost\Service\AllowUnencrypted -Value $true
-    } catch {
-        Write-Warning "Could not set AllowUnencrypted via WSMan provider: $_"
-        # fallback: set registry policy (already set above) — continue
+try {
+    $changes = @()
+
+    # Helper: set WSMan value only if different
+    function Set-WSManValue {
+        param (
+            [Parameter(Mandatory)]
+            [string] $Path,
+
+            [Parameter(Mandatory)]
+            [bool] $DesiredValue,
+
+            [string] $ChangeLabel
+        )
+
+        $current = Get-Item $Path -ErrorAction Stop
+
+        if ([bool]$current.Value -ne $DesiredValue) {
+            Set-Item $Path -Value $DesiredValue -ErrorAction Stop
+            if ($ChangeLabel) { $changes += $ChangeLabel }
+        }
+    }
+
+    # --- Authentication mechanisms ---
+    Set-WSManValue 'WSMan:\localhost\Service\Auth\Basic'     $true 'Basic auth'
+    Set-WSManValue 'WSMan:\localhost\Service\Auth\Negotiate' $true 'Negotiate auth'
+
+    if ($EnableCredSSP) {
+        Enable-WSManCredSSP -Role Server -Force | Out-Null
+        Set-WSManValue 'WSMan:\localhost\Service\Auth\CredSSP' $true 'CredSSP'
+    }
+    else {
+        Set-WSManValue 'WSMan:\localhost\Service\Auth\CredSSP' $false 'CredSSP disabled'
+    }
+
+    # --- Unencrypted traffic ---
+    if ($AllowUnencrypted -and -not $UseHTTPS) {
+        try {
+            Set-WSManValue 'WSMan:\localhost\Service\AllowUnencrypted' $true 'AllowUnencrypted'
+        }
+        catch {
+            Write-Warning "Could not set AllowUnencrypted via WSMan provider; continuing"
+        }
+    }
+
+    # --- Output ---
+    if ($changes.Count -eq 0) {
+        Write-Host "WinRM authentication settings already correct"
+    }
+    else {
+        Write-Host "WinRM authentication updated (" + ($changes -join ', ') + ")"
     }
 }
+catch {
+    Write-Warning "WinRM authentication configuration failed: $($_.Exception.Message)"
+}
+
 
 # -------------------------------------------------------------------
 # 6. TrustedHosts configuration
