@@ -214,158 +214,178 @@ Start-Service -Name WinRM -ErrorAction SilentlyContinue
 if ($UseHTTPS) {
     Write-Host "Configuring HTTPS listener on port $Port..."
 
-    # Determine primary IP and hostnames to include in cert
-    $ipList = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '169\.254' -and $_.PrefixOrigin -ne 'WellKnown' -and $_.IPAddress -ne '127.0.0.1' }).IPAddress
-    $primaryIP = $ipList | Select-Object -First 1
-    if (-not $primaryIP) { $primaryIP = $env:COMPUTERNAME }
+    # potentially nned to remove
+    # # Determine primary IP and hostnames to include in cert
+    # $ipList = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notmatch '169\.254' -and $_.PrefixOrigin -ne 'WellKnown' -and $_.IPAddress -ne '127.0.0.1' }).IPAddress
+    # $primaryIP = $ipList | Select-Object -First 1
+    # if (-not $primaryIP) { $primaryIP = $env:COMPUTERNAME }
 
         # --- Self-healing cleanup for stale HTTPS listeners or mismatched certs ---
-    Write-Host "Checking for stale HTTPS listeners or mismatched certificates..."
-    $hostname = $env:COMPUTERNAME
+        Write-Host "Ensuring WinRM HTTPS listener and certificate are valid..." -ForegroundColor Cyan
 
-    try {
-        $existingHttps = winrm enumerate winrm/config/listener 2>$null | Select-String "Transport = HTTPS"
-        if ($existingHttps) {
-            $stale = $false
-            $listenerDump = winrm enumerate winrm/config/listener 2>$null
-            foreach ($line in $listenerDump) {
-                if ($line -match "Transport = HTTPS" -and ($listenerDump -match "Hostname" -and $listenerDump -notmatch $hostname -and $listenerDump -notmatch $primaryIP)) {
-                    $stale = $true
-                }
-            }
+        $hostname  = $env:COMPUTERNAME
+        $now       = Get-Date
 
-            if ($stale) {
-                Write-Host "Detected stale or mismatched HTTPS listener (hostname/IP mismatch). Removing..."
-                winrm delete winrm/config/Listener?Address=*+Transport=HTTPS 2>$null | Out-Null
-            }
-        }
-
-        # Remove old WinRM HTTPS certificates that no longer match hostname/IP
-        $oldCerts = Get-ChildItem -Path Cert:\LocalMachine\My | Where-Object { $_.FriendlyName -like "WinRM HTTPS for Ansible*" }
-        foreach ($cert in $oldCerts) {
-            if ($cert.Subject -notmatch [regex]::Escape($hostname) -and $cert.Subject -notmatch [regex]::Escape($primaryIP)) {
-                Write-Host "Removing stale certificate $($cert.Subject) ($($cert.Thumbprint))..." -ForegroundColor DarkGray
-                Remove-Item -Path $cert.PSPath -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } catch {
-        Write-Warning "Self-healing cleanup encountered an issue: $_"
-    }
-
-
-    # Find existing HTTPS listener and bound thumbprint
-    $listenerText = winrm enumerate winrm/config/listener 2>$null
-    $httpsExists = $listenerText -match "Transport = HTTPS"
-    $currentThumb = $null
-    if ($httpsExists) {
-        $thumbLine = ($listenerText | Select-String "CertificateThumbprint" -SimpleMatch) | Select-Object -First 1
-        if ($thumbLine) {
-            $currentThumb = ($thumbLine -split '=')[-1].Trim()
-        }
-    }
-
-    $regenNeeded = $false
-    $cert = $null
-    if ($currentThumb) {
-        $cert = Get-ChildItem -Path "Cert:\LocalMachine\My\$currentThumb" -ErrorAction SilentlyContinue
-        if (-not $cert) {
-            Write-Host "Bound certificate not found in store (thumb=$currentThumb) -> regenerating." -ForegroundColor Yellow
-            $regenNeeded = $true
-        } else {
-            # Check expiry
-            if ($cert.NotAfter -lt (Get-Date)) {
-                Write-Host "Bound certificate is expired (NotAfter: $($cert.NotAfter)). Regeneration required." -ForegroundColor Yellow
-                $regenNeeded = $true
-            } else {
-                # Check if cert subject or SAN matches primary IP or computer name
-                $subjectMatches = $false
-                if ($cert.Subject -match [regex]::Escape($env:COMPUTERNAME)) { $subjectMatches = $true }
-                if ($primaryIP -and ($cert.Subject -match [regex]::Escape($primaryIP))) { $subjectMatches = $true }
-                # also check SANs (if available)
-                try {
-                    $san = ($cert.Extensions | Where-Object { $_.Oid.FriendlyName -eq "Subject Alternative Name" } ).Format($false)
-                    if ($san -and ($san -match [regex]::Escape($primaryIP) -or $san -match [regex]::Escape($env:COMPUTERNAME))) { $subjectMatches = $true }
-                } catch { }
-
-                if (-not $subjectMatches) {
-                    Write-Host "Certificate CN/SAN does not match hostname or IP. Regeneration required." -ForegroundColor Yellow
-                    $regenNeeded = $true
-                } else {
-                    Write-Host "Existing HTTPS certificate is valid and matches host." -ForegroundColor Green
-                }
-            }
-        }
-    } else {
-        Write-Host "No HTTPS listener or bound certificate found -> creating new certificate and listener." -ForegroundColor Yellow
-        $regenNeeded = $true
-    }
-
-    if ($regenNeeded) {
-        Write-Host "Creating new self-signed certificate for WinRM HTTPS (CN/SAN: $primaryIP, $($env:COMPUTERNAME))..." -ForegroundColor Yellow
-        # Create cert including primaryIP and computername as DNS names (works for many environments)
-        # Note: if you need IP to be in SAN explicitly in your environment, replace or extend this creation with advanced TextExtension usage.
-        $dnsNames = @()
-        if ($primaryIP) { $dnsNames += $primaryIP }
-        $dnsNames += $env:COMPUTERNAME
-        $cert = New-SelfSignedCertificate -DnsName $dnsNames -CertStoreLocation "Cert:\LocalMachine\My" -FriendlyName "WinRM HTTPS for Ansible" -NotAfter (Get-Date).AddYears(5)
-
-        # Remove any existing HTTPS listeners (safe)
-        try { winrm delete winrm/config/Listener?Address=*+Transport=HTTPS 2>$null } catch {}
-
-        # Create the HTTPS listener bound to the certificate thumbprint and port
-        $thumb = $cert.Thumbprint
-        Write-Host "Binding new certificate (thumb: $thumb) to WinRM HTTPS listener..." -ForegroundColor Yellow
-        & winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$primaryIP`"; CertificateThumbprint=`"$thumb`";Port=`"$Port`"}" | Out-Null
-    } else {
-        Write-Host "Ensuring HTTPS listener exists and is bound to the certificate..."
-        if (-not $httpsExists) {
-            # create listener and bind current cert if available, else regenerate
-            if ($cert) {
-                $thumb = $cert.Thumbprint
-                & winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$primaryIP`"; CertificateThumbprint=`"$thumb`";Port=`"$Port`"}" | Out-Null
-            } else {
-                Write-Host "No cert available to bind -> creating new cert..." -ForegroundColor DarkGray
-                $cert = New-SelfSignedCertificate -DnsName @($primaryIP,$env:COMPUTERNAME) -CertStoreLocation "Cert:\LocalMachine\My" -FriendlyName "WinRM HTTPS for Ansible" -NotAfter (Get-Date).AddYears(5)
-                $thumb = $cert.Thumbprint
-                & winrm create winrm/config/Listener?Address=*+Transport=HTTPS "@{Hostname=`"$primaryIP`"; CertificateThumbprint=`"$thumb`";Port=`"$Port`"}" | Out-Null
-            }
-        }
-    }
-
-    Set-WinRMFirewallRule -Transport HTTPS -Port $Port
-
-    # -------------------------------------------------------------------
-    # Safe cleanup: remove expired or unbound WinRM certificates
-    # -------------------------------------------------------------------
-    try {
-        Write-Host "Performing WinRM certificate store cleanup..."
-        $boundThumbs = (winrm enumerate winrm/config/listener 2>$null |
-            Select-String "CertificateThumbprint" |
-            ForEach-Object { ($_ -split '=')[-1].Trim() }) | Where-Object { $_ }
-        
-        $removed = @()
-            
-        Get-ChildItem -Path Cert:\LocalMachine\My |
+        # Get primary IPv4 (stable, non-APIPA)
+        $primaryIP = Get-NetIPAddress -AddressFamily IPv4 |
             Where-Object {
-                $_.FriendlyName -eq "WinRM HTTPS for Ansible" -and (
-                    ($_.Thumbprint -notin $boundThumbs) -or
-                    ($_.NotAfter -lt (Get-Date))
-                )
+                $_.IPAddress -notmatch '^169\.254' -and
+                $_.IPAddress -ne '127.0.0.1' -and
+                $_.PrefixOrigin -ne 'WellKnown'
             } |
-            ForEach-Object {
-                Write-Host "Removing stale or expired certificate: $($_.Thumbprint)"
-                Remove-Item -Path $_.PSPath -Force -ErrorAction SilentlyContinue
-                $removed += $_.Thumbprint
-            }
-        if ($removed.Count -eq 0) {
-            Write-Host "No stale or expired certificates found for cleanup."
-        } else {
-            Write-Host "Removed certificates: $($removed -join ', ')"
-        }   
-    } catch {
-        Write-Warning "Certificate cleanup encountered an issue: $_"
-    }
+            Select-Object -ExpandProperty IPAddress -First 1
 
+        # ------------------------------------------------------------
+        # 1. Read existing HTTPS listener (do NOT delete blindly)
+        # ------------------------------------------------------------
+        $listenerText = winrm get winrm/config/Listener?Address=*+Transport=HTTPS 2>$null
+        $currentThumb = $null
+
+        $thumbLine = $listenerText | Select-String 'CertificateThumbprint'
+        if ($thumbLine -and $thumbLine.Line -match '=\s*([A-F0-9]{40})') {
+            $currentThumb = $Matches[1]
+        }
+        # ------------------------------------------------------------
+        # 2. Try to reuse an existing valid certificate
+        # ------------------------------------------------------------
+        $cert = $null
+
+        if ($currentThumb) {
+            $cert = Get-ChildItem "Cert:\LocalMachine\My\$currentThumb" -ErrorAction SilentlyContinue
+        }
+
+        if (-not $cert) {
+            $cert = Get-ChildItem Cert:\LocalMachine\My |
+                Where-Object {
+                    $_.FriendlyName -eq 'WinRM HTTPS for Ansible' -and
+                    $_.NotAfter -gt $now
+                } |
+                Sort-Object NotAfter -Descending |
+                Select-Object -First 1
+        }
+
+        # ------------------------------------------------------------
+        # 3. Validate cert hostname / SAN
+        # ------------------------------------------------------------
+        $certValid = $false
+
+        if ($cert) {
+            $certValid = $true
+
+            if ($cert.Subject -notmatch [regex]::Escape($hostname) -and
+                ($primaryIP -and $cert.Subject -notmatch [regex]::Escape($primaryIP))) {
+                $certValid = $false
+            }
+
+            try {
+                $san = ($cert.Extensions |
+                    Where-Object { $_.Oid.FriendlyName -eq 'Subject Alternative Name' }
+                ).Format($false)
+
+                if ($san -and (
+                    $san -match [regex]::Escape($hostname) -or
+                    ($primaryIP -and $san -match [regex]::Escape($primaryIP))
+                )) {
+                    $certValid = $true
+                }
+            } catch {}
+        }
+
+        # ------------------------------------------------------------
+        # 4. Create cert ONLY if required
+        # ------------------------------------------------------------
+        if (-not $certValid) {
+            Write-Host "Creating new self-signed certificate for WinRM HTTPS..." -ForegroundColor Yellow
+
+            $dnsNames = @($hostname)
+            # if ($primaryIP) { $dnsNames += $primaryIP } #  commented out to avoid IP in SAN, potentially nned to remove
+
+            $cert = New-SelfSignedCertificate `
+                -DnsName $dnsNames `
+                -CertStoreLocation 'Cert:\LocalMachine\My' `
+                -FriendlyName 'WinRM HTTPS for Ansible' `
+                -NotAfter ($now.AddYears(5))
+        }
+
+        # ------------------------------------------------------------
+        # 5. Ensure listener exists and is bound to correct cert
+        # ------------------------------------------------------------
+        $needsListener = $true
+
+        if ($currentThumb -and $cert.Thumbprint -eq $currentThumb) {
+            $needsListener = $false
+        }
+
+        if ($needsListener) {
+            Write-Host "Binding certificate to WinRM HTTPS listener..." -ForegroundColor Yellow
+
+            try {
+                winrm delete winrm/config/Listener?Address=*+Transport=HTTPS 2>$null | Out-Null
+            } catch {}
+
+            $listenerHostname = $hostname
+            
+            # potentially nned to remove
+            ## Prefer IP only if cert SAN explicitly contains it
+            #try {
+            #    $san = ($cert.Extensions |
+            #        Where-Object { $_.Oid.FriendlyName -eq 'Subject Alternative Name' }
+            #    ).Format($false)
+#
+            #    if ($primaryIP -and $san -match [regex]::Escape($primaryIP)) {
+            #        $listenerHostname = $primaryIP
+            #    }
+            #} catch {}
+
+            winrm create winrm/config/Listener?Address=*+Transport=HTTPS `
+                "@{Hostname=`"$listenerHostname`";CertificateThumbprint=`"$($cert.Thumbprint)`";Port=`"$Port`"}" |
+            Out-Null
+
+        }
+
+        # ------------------------------------------------------------
+        # 6. Safe cleanup: remove expired or truly unused WinRM certs
+        # ------------------------------------------------------------
+        try {
+            Write-Host "Performing WinRM certificate cleanup..." -ForegroundColor Cyan
+
+            if (-not $cert -or -not $cert.Thumbprint) {
+                Write-Warning "Active WinRM certificate not identified; skipping cleanup to avoid accidental removal."
+                return
+            }
+
+            $boundThumbs = @($cert.Thumbprint)
+            $removed     = @()
+
+            Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop |
+                Where-Object {
+                    $_.FriendlyName -eq 'WinRM HTTPS for Ansible' -and
+                    (
+                        $_.NotAfter -lt $now -or
+                        $_.Thumbprint -notin $boundThumbs
+                    )
+                } |
+                ForEach-Object {
+                    try {
+                        Write-Host "Removing stale WinRM certificate: $($_.Thumbprint)" -ForegroundColor DarkGray
+                        Remove-Item $_.PSPath -Force -ErrorAction Stop
+                        $removed += $_.Thumbprint
+                    } catch {
+                        Write-Warning "Failed to remove certificate $($_.Thumbprint): $($_.Exception.Message)"
+                    }
+                }
+
+            if ($removed.Count -eq 0) {
+                Write-Host "No stale or expired WinRM certificates found." -ForegroundColor Green
+            } else {
+                Write-Host "Removed WinRM certificates: $($removed -join ', ')" -ForegroundColor Yellow
+            }
+
+        } catch {
+            Write-Warning "WinRM certificate cleanup encountered an issue and was skipped: $($_.Exception.Message)"
+        }
+
+        Write-Host "WinRM HTTPS listener and certificate are valid." -ForegroundColor Green
 
 } else {
     Write-Host "Configuring HTTP listener on port $Port..."
