@@ -22,6 +22,22 @@ param(
     [switch]$EnableCredSSP = $false
 )
 
+# -------------------------------------------------------------------
+# Require administrative privileges
+# -------------------------------------------------------------------
+$IsAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $IsAdmin) {
+    Write-Host "ERROR: This script must be run as Administrator." -ForegroundColor Red
+    Write-Host "Please re-run it in an elevated PowerShell session."
+    exit 1
+}
+
+# -------------------------------------------------------------------
+# Default port assignment
+# -------------------------------------------------------------------
 if (-not $Port) {
     $Port = if ($UseHTTPS) { 5986 } else { 5985 }
 }
