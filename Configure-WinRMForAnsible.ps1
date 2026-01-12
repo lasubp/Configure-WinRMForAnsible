@@ -572,34 +572,33 @@ if ($UseHTTPS) {
 
             if (-not $cert -or -not $cert.Thumbprint) {
                 Write-Warning "Active WinRM certificate not identified; skipping cleanup to avoid accidental removal."
-                return
-            }
-
-            $boundThumbs = @($cert.Thumbprint)
-            $removed     = @()
-
-            Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop |
-                Where-Object {
-                    $_.FriendlyName -eq 'WinRM HTTPS for Ansible' -and
-                    (
-                        $_.NotAfter -lt $now -or
-                        $_.Thumbprint -notin $boundThumbs
-                    )
-                } |
-                ForEach-Object {
-                    try {
-                        Write-Host "Removing stale WinRM certificate: $($_.Thumbprint)" -ForegroundColor DarkGray
-                        Remove-Item $_.PSPath -Force -ErrorAction Stop
-                        $removed += $_.Thumbprint
-                    } catch {
-                        Write-Warning "Failed to remove certificate $($_.Thumbprint): $($_.Exception.Message)"
-                    }
-                }
-
-            if ($removed.Count -eq 0) {
-                Write-Host "No stale or expired WinRM certificates found." -ForegroundColor Green
             } else {
-                Write-Host "Removed WinRM certificates: $($removed -join ', ')" -ForegroundColor Yellow
+                $boundThumbs = @($cert.Thumbprint)
+                $removed     = @()
+
+                Get-ChildItem Cert:\LocalMachine\My -ErrorAction Stop |
+                    Where-Object {
+                        $_.FriendlyName -eq 'WinRM HTTPS for Ansible' -and
+                        (
+                            $_.NotAfter -lt $now -or
+                            $_.Thumbprint -notin $boundThumbs
+                        )
+                    } |
+                    ForEach-Object {
+                        try {
+                            Write-Host "Removing stale WinRM certificate: $($_.Thumbprint)" -ForegroundColor DarkGray
+                            Remove-Item $_.PSPath -Force -ErrorAction Stop
+                            $removed += $_.Thumbprint
+                        } catch {
+                            Write-Warning "Failed to remove certificate $($_.Thumbprint): $($_.Exception.Message)"
+                        }
+                    }
+
+                if ($removed.Count -eq 0) {
+                    Write-Host "No stale or expired WinRM certificates found." -ForegroundColor Green
+                } else {
+                    Write-Host "Removed WinRM certificates: $($removed -join ', ')" -ForegroundColor Yellow
+                }
             }
 
         } catch {
@@ -607,6 +606,9 @@ if ($UseHTTPS) {
         }
 
         Write-Host "WinRM HTTPS listener and certificate are valid." -ForegroundColor Green
+
+        # Add HTTPS firewall rule idempotently
+        Set-WinRMFirewallRule -Transport HTTPS -Port $Port
 
 } else {
     Write-Host "Configuring HTTP listener on port $Port..."
@@ -703,8 +705,12 @@ Write-Host "TrustedHosts: $TrustedHosts"
 Write-Host "Unencrypted: $AllowUnencrypted"
 Write-Host "Auth: Basic=$true, Negotiate=$true, CredSSP=$EnableCredSSP"
 if ($UseHTTPS) {
-    $curThumb = (winrm enumerate winrm/config/listener 2>$null | Select-String "CertificateThumbprint" | ForEach-Object { ($_ -split '=')[-1].Trim() }) | Select-Object -First 1
+    $listenerText = winrm get winrm/config/Listener?Address=*+Transport=HTTPS 2>$null
+    $thumbLine = $listenerText | Select-String 'CertificateThumbprint'
+    $curThumb = $null
+    if ($thumbLine -and $thumbLine.Line -match '=\s*([A-F0-9]{40})') { $curThumb = $Matches[1] }
     Write-Host "Certificate Thumbprint: $curThumb"
 }
+
 Write-Host "`nNow you can test from Ansible:"
 Write-Host "  ansible windows -i inventory.ini -m ansible.windows.win_ping" -ForegroundColor Yellow
