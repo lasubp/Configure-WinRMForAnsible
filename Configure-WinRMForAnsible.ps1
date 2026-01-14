@@ -48,6 +48,84 @@ if (-not $IsAdmin) {
 }
 
 # -------------------------------------------------------------------
+# Preserve sign-in UX (conservative): detect pre-state BEFORE creating service user
+# -------------------------------------------------------------------
+$script:PreserveNoClickUX = $false
+
+# Skip on domain-joined systems
+$domainJoined = $false
+try {
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $domainJoined = [bool]$cs.PartOfDomain
+} catch {}
+
+# Skip if lock screen already managed by policy/GPO
+$polPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+$lockPolicyManaged = $false
+try {
+    $null = Get-ItemProperty -Path $polPath -Name 'NoLockScreen' -ErrorAction Stop
+    $lockPolicyManaged = $true
+} catch {}
+
+if (-not $domainJoined -and -not $lockPolicyManaged) {
+    try {
+        # enabled local users excluding built-ins and the service user name (even if it exists already)
+        $preUsers = Get-LocalUser | Where-Object {
+            $_.Enabled -eq $true -and
+            $_.Name -notin @('Administrator','Guest','DefaultAccount','WDAGUtilityAccount') -and
+            $_.Name -ne $ServiceUserName
+        }
+
+        if ($preUsers.Count -eq 1) {
+            $u = $preUsers[0]
+
+            # Very conservative: only if password is NOT required (your case)
+            if ($u.PasswordRequired -eq $false) {
+
+                # Also conservative: do nothing if there are other interactive sessions around
+                if (-not (Test-HasOtherInteractiveSessions -AllowedUser $u.Name)) {
+                    $script:PreserveNoClickUX = $true
+                    $script:PrimaryInteractiveUser = $u.Name
+                }
+            }
+        }
+    } catch {}
+}
+
+function Disable-LockScreen {
+    $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+    if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
+    New-ItemProperty -Path $path -Name 'NoLockScreen' -PropertyType DWord -Value 1 -Force | Out-Null
+}
+
+function Test-HasOtherInteractiveSessions {
+    param([string]$AllowedUser)
+
+    $out = (query session) 2>$null
+    if (-not $out) { return $false }
+
+    foreach ($line in $out) {
+        # ignore headers
+        if ($line -match '^\s*SESSIONNAME\s+USERNAME') { continue }
+
+        # interested in sessions that have a USERNAME
+        # Match: username ... id ... state
+        $m = [regex]::Match($line, '^\s*(\S+)\s+(\S+)\s+(\d+)\s+(\S+)')
+        if ($m.Success) {
+            $user = $m.Groups[2].Value
+            $state = $m.Groups[4].Value
+
+            # If another user has an Active/Disc session, be conservative and do nothing
+            if ($user -and $user -ne $AllowedUser -and $state -match 'Active|Disc') {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
+# -------------------------------------------------------------------
 # Hide user from Windows sign-in screen
 # -------------------------------------------------------------------
 function Hide-UserFromLogonUI {
@@ -220,6 +298,16 @@ if ($NewUser) {
         -UserName $ServiceUserName `
         -PlainPassword $ServiceUserPass `
         -PasswordFile $ServiceUserPassFile
+}
+
+# Restore prior single-user no-click UX only when we are very sure it existed
+if ($script:PreserveNoClickUX) {
+    try {
+        Disable-LockScreen
+        Write-Host "Preserved no-click sign-in UX for '$script:PrimaryInteractiveUser' (Lock Screen disabled)." -ForegroundColor Green
+    } catch {
+        Write-Warning "Could not preserve sign-in UX: $($_.Exception.Message)"
+    }
 }
 
 # -------------------------------------------------------------------
