@@ -35,6 +35,72 @@ param(
 )
 
 # -------------------------------------------------------------------
+# CI-friendly defaults and logging
+# -------------------------------------------------------------------
+$ProgressPreference = 'SilentlyContinue'
+$ConfirmPreference = 'None'
+
+$script:EventSource = 'Configure-WinRMForAnsible'
+$script:EventLogEnabled = $false
+$script:ExitCode = 0
+
+function Initialize-EventLogSource {
+    try {
+        if (-not [System.Diagnostics.EventLog]::SourceExists($script:EventSource)) {
+            New-EventLog -LogName Application -Source $script:EventSource
+        }
+        $script:EventLogEnabled = $true
+    }
+    catch {
+        $script:EventLogEnabled = $false
+    }
+}
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory)]
+        [ValidateSet('Info','Warn','Error')]
+        [string]$Level,
+
+        [Parameter(Mandatory)]
+        [string]$Message
+    )
+
+    switch ($Level) {
+        'Info'  { Write-Output $Message }
+        'Warn'  { Write-Warning $Message }
+        'Error' { Write-Error $Message; $script:ExitCode = 1 }
+    }
+
+    if ($script:EventLogEnabled) {
+        try {
+            $entryType = switch ($Level) {
+                'Info'  { 'Information' }
+                'Warn'  { 'Warning' }
+                'Error' { 'Error' }
+            }
+            $eventId = switch ($Level) {
+                'Info'  { 1000 }
+                'Warn'  { 1001 }
+                'Error' { 1002 }
+            }
+
+            Write-EventLog -LogName Application -Source $script:EventSource -EntryType $entryType -EventId $eventId -Message $Message
+        }
+        catch {
+            # Best-effort logging to event log; do not fail script on log issues.
+        }
+    }
+}
+
+Initialize-EventLogSource
+
+trap {
+    Write-Log -Level Error -Message "Unhandled error: $($_.Exception.Message)"
+    exit 1
+}
+
+# -------------------------------------------------------------------
 # Require administrative privileges
 # -------------------------------------------------------------------
 $IsAdmin = ([Security.Principal.WindowsPrincipal] `
@@ -42,8 +108,8 @@ $IsAdmin = ([Security.Principal.WindowsPrincipal] `
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 if (-not $IsAdmin) {
-    Write-Host "ERROR: This script must be run as Administrator." -ForegroundColor Red
-    Write-Host "Please re-run it in an elevated PowerShell session."
+    Write-Log -Level Error -Message "This script must be run as Administrator."
+    Write-Log -Level Error -Message "Please re-run it in an elevated PowerShell session."
     exit 1
 }
 
@@ -156,7 +222,7 @@ function New-AnsibleServiceUser {
         [string]$PasswordFile
     )
 
-    Write-Host "Ensuring local service user '$UserName' exists..." -ForegroundColor Cyan
+    Write-Log -Level Info -Message "Ensuring local service user '$UserName' exists..."
 
     $existing = Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue
     if (-not $existing) {
@@ -174,7 +240,7 @@ function New-AnsibleServiceUser {
             Remove-Item $PasswordFile -Force -ErrorAction SilentlyContinue
         }
         elseif ($PlainPassword) {
-            Write-Warning "ServiceUserPass provided via command line can leak via logs/process args. Prefer -ServiceUserPassFile when possible."
+            Write-Log -Level Warn -Message "ServiceUserPass provided via command line can leak via logs/process args. Prefer -ServiceUserPassFile when possible."
             $plain = $PlainPassword
         }
 
@@ -195,10 +261,10 @@ function New-AnsibleServiceUser {
             -PasswordNeverExpires `
             -UserMayNotChangePassword | Out-Null
 
-        Write-Host "User '$UserName' created." -ForegroundColor Green
+        Write-Log -Level Info -Message "User '$UserName' created."
     }
     else {
-        Write-Host "User '$UserName' already exists. Applying hardening..." -ForegroundColor Yellow
+        Write-Log -Level Info -Message "User '$UserName' already exists. Applying hardening..."
     }
 
     # Add to Administrators (your original line kept)
@@ -279,7 +345,7 @@ function New-AnsibleServiceUser {
         secedit /configure /db secedit.sdb /cfg $tmp /areas USER_RIGHTS | Out-Null
     }
     catch {
-        Write-Warning "Failed to apply logon restrictions for '$UserName': $($_.Exception.Message)"
+        Write-Log -Level Warn -Message "Failed to apply logon restrictions for '$UserName': $($_.Exception.Message)"
     }
 
     # Hide from Windows logon UI (so it won't appear as a login option)
@@ -287,10 +353,10 @@ function New-AnsibleServiceUser {
         Hide-UserFromLogonUI -UserName $UserName
     }
     catch {
-        Write-Warning "Failed to hide '$UserName' from logon UI: $($_.Exception.Message)"
+        Write-Log -Level Warn -Message "Failed to hide '$UserName' from logon UI: $($_.Exception.Message)"
     }
 
-    Write-Host "Service user '$UserName' created and hardened." -ForegroundColor Green
+    Write-Log -Level Info -Message "Service user '$UserName' created and hardened."
 }
 
 if ($NewUser) {
@@ -304,9 +370,9 @@ if ($NewUser) {
 if ($script:PreserveNoClickUX) {
     try {
         Disable-LockScreen
-        Write-Host "Preserved no-click sign-in UX for '$script:PrimaryInteractiveUser' (Lock Screen disabled)." -ForegroundColor Green
+        Write-Log -Level Info -Message "Preserved no-click sign-in UX for '$script:PrimaryInteractiveUser' (Lock Screen disabled)."
     } catch {
-        Write-Warning "Could not preserve sign-in UX: $($_.Exception.Message)"
+        Write-Log -Level Warn -Message "Could not preserve sign-in UX: $($_.Exception.Message)"
     }
 }
 
@@ -317,7 +383,7 @@ if (-not $Port) {
     $Port = if ($UseHTTPS) { 5986 } else { 5985 }
 }
 
-Write-Host "=== Configuring WinRM for Ansible ===" -ForegroundColor Cyan
+Write-Log -Level Info -Message "=== Configuring WinRM for Ansible ==="
 
 # -------------------------------------------------------------------
 # 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
@@ -337,7 +403,7 @@ function Set-WinRMFirewallRule {
     $existingRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
 
     if ($existingRule) {
-        Write-Host "Firewall rule '$ruleName' already exists. Ensuring correct settings..."
+        Write-Log -Level Info -Message "Firewall rule '$ruleName' already exists. Ensuring correct settings..."
         $existingRule |
             Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow |
             Out-Null
@@ -347,7 +413,7 @@ function Set-WinRMFirewallRule {
             Out-Null
     }
     else {
-        Write-Host "Creating firewall rule '$ruleName'..."
+        Write-Log -Level Info -Message "Creating firewall rule '$ruleName'..."
         New-NetFirewallRule `
             -Name $ruleName `
             -DisplayName $ruleName `
@@ -365,15 +431,15 @@ function Set-WinRMFirewallRule {
 # 0. Fix: handle systems with Public network profiles early
 # -------------------------------------------------------------------
 if (-not $SkipNetworkFix) {
-    Write-Host "Checking network profile..."
+    Write-Log -Level Info -Message "Checking network profile..."
     $publicNetworks = Get-NetConnectionProfile | Where-Object {$_.NetworkCategory -eq "Public"}
     if ($publicNetworks) {
         foreach ($p in $publicNetworks) {
-            Write-Host "Public network detected for '$($p.Name)'. Switching to Private to allow WinRM configuration..." -ForegroundColor Yellow
+            Write-Log -Level Info -Message "Public network detected for '$($p.Name)'. Switching to Private to allow WinRM configuration..."
             try {
                 Set-NetConnectionProfile -Name $p.Name -NetworkCategory Private -ErrorAction Stop
             } catch {
-                Write-Warning "Failed to change network '$($p.Name)': $_"
+                Write-Log -Level Warn -Message "Failed to change network '$($p.Name)': $_"
             }
         }
         Start-Sleep 2
@@ -425,12 +491,11 @@ function Set-RegistryValue {
         }
     }
     catch {
-        Write-Error "Failed to configure registry value '$Name' at '$Path': $($_.Exception.Message)"
-        throw
+        throw "Failed to configure registry value '$Name' at '$Path': $($_.Exception.Message)"
     }
 }
 
-Write-Host "Ensuring WinRM policy registry settings are correctly configured..."
+Write-Log -Level Info -Message "Ensuring WinRM policy registry settings are correctly configured..."
 
 $script:RegChanges = @()
 
@@ -479,10 +544,10 @@ Set-RegistryValue `
 
 # --- Output ---
 if ($RegChanges.Count -eq 0) {
-    Write-Host "WinRM policy registry settings already correct"
+    Write-Log -Level Info -Message "WinRM policy registry settings already correct"
 }
 else {
-    Write-Host "WinRM policy registry updated (" + ($RegChanges -join ', ') + ")"
+    Write-Log -Level Info -Message ("WinRM policy registry updated (" + ($RegChanges -join ', ') + ")")
 }
 
 # -------------------------------------------------------------------
@@ -490,19 +555,19 @@ else {
 # Avoids slow CRL/OCSP online checks for self-signed certs (reduces boot delay)
 # -------------------------------------------------------------------
 try {
-    Write-Host "Applying machine-wide WinTrust optimization to reduce online CRL checks..."
+    Write-Log -Level Info -Message "Applying machine-wide WinTrust optimization to reduce online CRL checks..."
     $wk = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WinTrust\Trust Providers\Software Publishing"
     if (-not (Test-Path $wk)) { New-Item -Path $wk -Force | Out-Null }
     # Value 146944 reduces strict online revocation checks (helps booting offline)
     Set-ItemProperty -Path $wk -Name "State" -Value 146944 -Type DWord -Force
 } catch {
-    Write-Warning "Could not apply WinTrust optimization: $_"
+    Write-Log -Level Warn -Message "Could not apply WinTrust optimization: $_"
 }
 
 # -------------------------------------------------------------------
 # 2. Enable PS Remoting / WinRM service
 # -------------------------------------------------------------------
-Write-Host "Ensuring WinRM service is correctly configured..."
+Write-Log -Level Info -Message "Ensuring WinRM service is correctly configured..."
 
 try {
     $changes = @()
@@ -526,24 +591,24 @@ try {
 
     # --- Output ---
     if ($changes.Count -eq 0) {
-        Write-Host "WinRM already configured and running"
+        Write-Log -Level Info -Message "WinRM already configured and running"
     }
     else {
-        Write-Host "WinRM updated (" + ($changes -join ', ') + ")"
+        Write-Log -Level Info -Message ("WinRM updated (" + ($changes -join ', ') + ")")
     }
 }
 catch {
-    Write-Warning "WinRM configuration failed: $($_.Exception.Message)"
+    Write-Log -Level Warn -Message "WinRM configuration failed: $($_.Exception.Message)"
 }
 
 # -------------------------------------------------------------------
 # 3. Create listener(s) (HTTPS optional) and manage HTTPS cert lifecycle
 # -------------------------------------------------------------------
 if ($UseHTTPS) {
-    Write-Host "Configuring HTTPS listener on port $Port..."
+    Write-Log -Level Info -Message "Configuring HTTPS listener on port $Port..."
 
         # --- Self-healing cleanup for stale HTTPS listeners or mismatched certs ---
-        Write-Host "Ensuring WinRM HTTPS listener and certificate are valid..." -ForegroundColor Cyan
+        Write-Log -Level Info -Message "Ensuring WinRM HTTPS listener and certificate are valid..."
 
         $hostname  = $env:COMPUTERNAME
         $now       = Get-Date
@@ -617,7 +682,7 @@ if ($UseHTTPS) {
         # 4. Create cert ONLY if required
         # ------------------------------------------------------------
         if (-not $certValid) {
-            Write-Host "Creating new self-signed certificate for WinRM HTTPS..." -ForegroundColor Yellow
+            Write-Log -Level Info -Message "Creating new self-signed certificate for WinRM HTTPS..."
 
             $dnsNames = @($hostname)
 
@@ -638,7 +703,7 @@ if ($UseHTTPS) {
         }
 
         if ($needsListener) {
-            Write-Host "Binding certificate to WinRM HTTPS listener..." -ForegroundColor Yellow
+            Write-Log -Level Info -Message "Binding certificate to WinRM HTTPS listener..."
 
             try {
                 winrm delete winrm/config/Listener?Address=*+Transport=HTTPS 2>$null | Out-Null
@@ -656,10 +721,10 @@ if ($UseHTTPS) {
         # 6. Safe cleanup: remove expired or truly unused WinRM certs
         # ------------------------------------------------------------
         try {
-            Write-Host "Performing WinRM certificate cleanup..." -ForegroundColor Cyan
+            Write-Log -Level Info -Message "Performing WinRM certificate cleanup..."
 
             if (-not $cert -or -not $cert.Thumbprint) {
-                Write-Warning "Active WinRM certificate not identified; skipping cleanup to avoid accidental removal."
+                Write-Log -Level Warn -Message "Active WinRM certificate not identified; skipping cleanup to avoid accidental removal."
             } else {
                 $boundThumbs = @($cert.Thumbprint)
                 $removed     = @()
@@ -674,37 +739,37 @@ if ($UseHTTPS) {
                     } |
                     ForEach-Object {
                         try {
-                            Write-Host "Removing stale WinRM certificate: $($_.Thumbprint)" -ForegroundColor DarkGray
+                            Write-Log -Level Info -Message "Removing stale WinRM certificate: $($_.Thumbprint)"
                             Remove-Item $_.PSPath -Force -ErrorAction Stop
                             $removed += $_.Thumbprint
                         } catch {
-                            Write-Warning "Failed to remove certificate $($_.Thumbprint): $($_.Exception.Message)"
+                            Write-Log -Level Warn -Message "Failed to remove certificate $($_.Thumbprint): $($_.Exception.Message)"
                         }
                     }
 
                 if ($removed.Count -eq 0) {
-                    Write-Host "No stale or expired WinRM certificates found." -ForegroundColor Green
+                    Write-Log -Level Info -Message "No stale or expired WinRM certificates found."
                 } else {
-                    Write-Host "Removed WinRM certificates: $($removed -join ', ')" -ForegroundColor Yellow
+                    Write-Log -Level Info -Message "Removed WinRM certificates: $($removed -join ', ')"
                 }
             }
 
         } catch {
-            Write-Warning "WinRM certificate cleanup encountered an issue and was skipped: $($_.Exception.Message)"
+            Write-Log -Level Warn -Message "WinRM certificate cleanup encountered an issue and was skipped: $($_.Exception.Message)"
         }
 
-        Write-Host "WinRM HTTPS listener and certificate are valid." -ForegroundColor Green
+        Write-Log -Level Info -Message "WinRM HTTPS listener and certificate are valid."
 
         # Add HTTPS firewall rule idempotently
         Set-WinRMFirewallRule -Transport HTTPS -Port $Port
 
 } else {
-    Write-Host "Configuring HTTP listener on port $Port..."
+    Write-Log -Level Info -Message "Configuring HTTP listener on port $Port..."
     $httpListener = winrm enumerate winrm/config/listener 2>$null | Select-String "Transport = HTTP"
     if (-not $httpListener) {
         & winrm create winrm/config/Listener?Address=*+Transport=HTTP "@{Port=`"$Port`"}" | Out-Null
     } else {
-        Write-Host "HTTP listener already exists."
+        Write-Log -Level Info -Message "HTTP listener already exists."
     }
 
     # Add HTTP firewall rule idempotently
@@ -715,7 +780,7 @@ if ($UseHTTPS) {
 # -------------------------------------------------------------------
 # 5. Configure WinRM authentication & transport settings
 # -------------------------------------------------------------------
-Write-Host "Ensuring WinRM authentication settings are correctly configured..."
+Write-Log -Level Info -Message "Ensuring WinRM authentication settings are correctly configured..."
 
 try {
     $changes = @()
@@ -757,20 +822,20 @@ try {
             Set-WSManValue 'WSMan:\localhost\Service\AllowUnencrypted' $true 'AllowUnencrypted'
         }
         catch {
-            Write-Warning "Could not set AllowUnencrypted via WSMan provider; continuing"
+            Write-Log -Level Warn -Message "Could not set AllowUnencrypted via WSMan provider; continuing"
         }
     }
 
     # --- Output ---
     if ($changes.Count -eq 0) {
-        Write-Host "WinRM authentication settings already correct"
+        Write-Log -Level Info -Message "WinRM authentication settings already correct"
     }
     else {
-        Write-Host "WinRM authentication updated (" + ($changes -join ', ') + ")"
+        Write-Log -Level Info -Message ("WinRM authentication updated (" + ($changes -join ', ') + ")")
     }
 }
 catch {
-    Write-Warning "WinRM authentication configuration failed: $($_.Exception.Message)"
+    Write-Log -Level Warn -Message "WinRM authentication configuration failed: $($_.Exception.Message)"
 }
 
 
@@ -778,7 +843,7 @@ catch {
 # 6. TrustedHosts configuration
 # -------------------------------------------------------------------
 if ($TrustedHosts) {
-    Write-Host "Setting TrustedHosts to '$TrustedHosts'..."
+    Write-Log -Level Info -Message "Setting TrustedHosts to '$TrustedHosts'..."
     Set-Item WSMan:\localhost\Client\TrustedHosts -Value $TrustedHosts -Force
 }
 
@@ -787,18 +852,20 @@ if ($TrustedHosts) {
 # -------------------------------------------------------------------
 Restart-Service WinRM -Force
 
-Write-Host "=== WinRM configuration complete ($(if ($UseHTTPS) {'HTTPS'} else {'HTTP'})) (Public network compatible) ===" -ForegroundColor Green
-Write-Host "Port: $Port"
-Write-Host "TrustedHosts: $TrustedHosts"
-Write-Host "Unencrypted: $AllowUnencrypted"
-Write-Host "Auth: Basic=$true, Negotiate=$true, CredSSP=$EnableCredSSP"
+Write-Log -Level Info -Message "=== WinRM configuration complete ($(if ($UseHTTPS) {'HTTPS'} else {'HTTP'})) (Public network compatible) ==="
+Write-Log -Level Info -Message "Port: $Port"
+Write-Log -Level Info -Message "TrustedHosts: $TrustedHosts"
+Write-Log -Level Info -Message "Unencrypted: $AllowUnencrypted"
+Write-Log -Level Info -Message "Auth: Basic=$true, Negotiate=$true, CredSSP=$EnableCredSSP"
 if ($UseHTTPS) {
     $listenerText = winrm get winrm/config/Listener?Address=*+Transport=HTTPS 2>$null
     $thumbLine = $listenerText | Select-String 'CertificateThumbprint'
     $curThumb = $null
     if ($thumbLine -and $thumbLine.Line -match '=\s*([A-F0-9]{40})') { $curThumb = $Matches[1] }
-    Write-Host "Certificate Thumbprint: $curThumb"
+    Write-Log -Level Info -Message "Certificate Thumbprint: $curThumb"
 }
 
-Write-Host "`nNow you can test from Ansible:"
-Write-Host "  ansible windows -i inventory.ini -m ansible.windows.win_ping" -ForegroundColor Yellow
+Write-Log -Level Info -Message "Now you can test from Ansible:"
+Write-Log -Level Info -Message "  ansible windows -i inventory.ini -m ansible.windows.win_ping"
+
+exit $script:ExitCode
