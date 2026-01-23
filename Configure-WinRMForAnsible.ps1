@@ -75,15 +75,36 @@ function Initialize-EventLogSource {
     }
 }
 
+function Initialize-LogRoot {
+    if (-not $script:IsAdmin) { return }
+
+    $root = Join-Path $env:ProgramData 'Configure-WinRMForAnsible'
+    try {
+        if (-not (Test-Path $root)) {
+            New-Item -ItemType Directory -Path $root -Force | Out-Null
+        }
+
+        # Allow standard users to write logs (machine-wide log root).
+        & icacls $root /grant "Users:(M)" /t | Out-Null
+    }
+    catch {
+        Write-Warning "Failed to initialize log root '$root': $($_.Exception.Message)"
+    }
+}
+
 function Initialize-LogFile {
     $resolvedLogPath = if ($script:LogPath) {
         $script:LogPath
     }
     else {
-        Join-Path $env:LOCALAPPDATA 'Configure-WinRMForAnsible\Configure-WinRMForAnsible.log'
+        Join-Path $env:ProgramData 'Configure-WinRMForAnsible\Configure-WinRMForAnsible.log'
     }
 
     try {
+        if (-not $script:IsAdmin -and -not $script:LogPath) {
+            # Default machine-wide log is for elevated runs only unless explicitly overridden.
+            return
+        }
         $dir = Split-Path -Parent $resolvedLogPath
         if ($dir -and -not (Test-Path $dir)) {
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -189,6 +210,7 @@ function Write-Log {
 }
 
 Initialize-EventLogSource
+Initialize-LogRoot
 Initialize-LogFile
 
 trap {
