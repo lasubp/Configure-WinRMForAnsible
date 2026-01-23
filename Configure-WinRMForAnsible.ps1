@@ -21,6 +21,10 @@ param(
     [switch]$AllowUnencrypted = $true,
     [switch]$SkipNetworkFix = $false,
     [switch]$EnableCredSSP = $false,
+    [string]$LogPath,
+    [ValidateSet('text','json')]
+    [string]$LogFormat = 'text',
+    [switch]$DisableEventLog,
     # -------------------------------
     # Service user creation
     # -------------------------------
@@ -42,9 +46,15 @@ $ConfirmPreference = 'None'
 
 $script:EventSource = 'Configure-WinRMForAnsible'
 $script:EventLogEnabled = $false
+$script:LogFileEnabled = $false
+$script:LogFilePath = $null
+$script:LogPath = $LogPath
+$script:LogFormat = $LogFormat
+$script:DisableEventLog = $DisableEventLog
 $script:ExitCode = 0
 
 function Initialize-EventLogSource {
+    if ($script:DisableEventLog) { return }
     try {
         if (-not [System.Diagnostics.EventLog]::SourceExists($script:EventSource)) {
             New-EventLog -LogName Application -Source $script:EventSource
@@ -54,6 +64,62 @@ function Initialize-EventLogSource {
     catch {
         $script:EventLogEnabled = $false
     }
+}
+
+function Initialize-LogFile {
+    $resolvedLogPath = if ($script:LogPath) {
+        $script:LogPath
+    }
+    else {
+        Join-Path $env:ProgramData 'Configure-WinRMForAnsible\Configure-WinRMForAnsible.log'
+    }
+
+    try {
+        $dir = Split-Path -Parent $resolvedLogPath
+        if ($dir -and -not (Test-Path $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+
+        if (-not (Test-Path $resolvedLogPath)) {
+            New-Item -ItemType File -Path $resolvedLogPath -Force | Out-Null
+        }
+
+        $script:LogFileEnabled = $true
+        $script:LogFilePath = $resolvedLogPath
+    }
+    catch {
+        Write-Warning "Failed to initialize log file '$resolvedLogPath': $($_.Exception.Message)"
+    }
+}
+
+function ConvertTo-JsonSafe {
+    param([Parameter(Mandatory)][string]$Text)
+
+    $escaped = $Text -replace '\\', '\\\\'
+    $escaped = $escaped -replace '"', '\"'
+    $escaped = $escaped -replace "`r", '\r'
+    $escaped = $escaped -replace "`n", '\n'
+    $escaped = $escaped -replace "`t", '\t'
+    return $escaped
+}
+
+function Format-LogLine {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Level,
+
+        [Parameter(Mandatory)]
+        [string]$Message
+    )
+
+    $timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffK")
+
+    if ($script:LogFormat -eq 'json') {
+        $msg = ConvertTo-JsonSafe -Text $Message
+        return "{""ts"":""$timestamp"",""level"":""$Level"",""msg"":""$msg""}"
+    }
+
+    return "$timestamp [$Level] $Message"
 }
 
 function Write-Log {
@@ -66,10 +132,21 @@ function Write-Log {
         [string]$Message
     )
 
+    $formatted = Format-LogLine -Level $Level -Message $Message
+
     switch ($Level) {
-        'Info'  { Write-Output $Message }
-        'Warn'  { Write-Warning $Message }
-        'Error' { Write-Error $Message; $script:ExitCode = 1 }
+        'Info'  { Write-Output $formatted }
+        'Warn'  { Write-Warning $formatted }
+        'Error' { Write-Error $formatted; $script:ExitCode = 1 }
+    }
+
+    if ($script:LogFileEnabled) {
+        try {
+            Add-Content -Path $script:LogFilePath -Value $formatted -Encoding Ascii
+        }
+        catch {
+            # Best-effort file logging; do not fail script on log issues.
+        }
     }
 
     if ($script:EventLogEnabled) {
@@ -94,6 +171,7 @@ function Write-Log {
 }
 
 Initialize-EventLogSource
+Initialize-LogFile
 
 trap {
     Write-Log -Level Error -Message "Unhandled error: $($_.Exception.Message)"
