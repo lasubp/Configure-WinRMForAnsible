@@ -25,6 +25,7 @@ param(
     [ValidateSet('text','json')]
     [string]$LogFormat = 'text',
     [switch]$DisableEventLog,
+    [switch]$FriendlyErrors = $true,
     # -------------------------------
     # Service user creation
     # -------------------------------
@@ -51,7 +52,15 @@ $script:LogFilePath = $null
 $script:LogPath = $LogPath
 $script:LogFormat = $LogFormat
 $script:DisableEventLog = $DisableEventLog
+$script:FriendlyErrors = $FriendlyErrors
 $script:ExitCode = 0
+
+# -------------------------------------------------------------------
+# Require administrative privileges
+# -------------------------------------------------------------------
+$script:IsAdmin = ([Security.Principal.WindowsPrincipal] `
+    [Security.Principal.WindowsIdentity]::GetCurrent()
+).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 function Initialize-EventLogSource {
     if ($script:DisableEventLog) { return }
@@ -71,7 +80,7 @@ function Initialize-LogFile {
         $script:LogPath
     }
     else {
-        Join-Path $env:ProgramData 'Configure-WinRMForAnsible\Configure-WinRMForAnsible.log'
+        Join-Path $env:LOCALAPPDATA 'Configure-WinRMForAnsible\Configure-WinRMForAnsible.log'
     }
 
     try {
@@ -137,15 +146,24 @@ function Write-Log {
     switch ($Level) {
         'Info'  { Write-Output $formatted }
         'Warn'  { Write-Warning $formatted }
-        'Error' { Write-Error $formatted; $script:ExitCode = 1 }
+        'Error' {
+            if ($script:FriendlyErrors) {
+                Write-Host $formatted -ForegroundColor Red
+            }
+            else {
+                Write-Error $formatted
+            }
+            $script:ExitCode = 1
+        }
     }
 
     if ($script:LogFileEnabled) {
         try {
-            Add-Content -Path $script:LogFilePath -Value $formatted -Encoding Ascii
+            Add-Content -Path $script:LogFilePath -Value $formatted -Encoding Ascii -ErrorAction Stop
         }
         catch {
-            # Best-effort file logging; do not fail script on log issues.
+            $script:LogFileEnabled = $false
+            Write-Warning "Log file write failed; disabling file logging: $($_.Exception.Message)"
         }
     }
 
@@ -178,14 +196,7 @@ trap {
     exit 1
 }
 
-# -------------------------------------------------------------------
-# Require administrative privileges
-# -------------------------------------------------------------------
-$IsAdmin = ([Security.Principal.WindowsPrincipal] `
-    [Security.Principal.WindowsIdentity]::GetCurrent()
-).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $IsAdmin) {
+if (-not $script:IsAdmin) {
     Write-Log -Level Error -Message "This script must be run as Administrator."
     Write-Log -Level Error -Message "Please re-run it in an elevated PowerShell session."
     exit 1
