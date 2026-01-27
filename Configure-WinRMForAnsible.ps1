@@ -213,64 +213,94 @@ function Write-Log {
     }
 }
 
-Initialize-EventLogSource
-Initialize-LogRoot
-Initialize-LogFile
+# -------------------------------------------------------------------
+# Firewall rule helper
+# -------------------------------------------------------------------
+function Set-WinRMFirewallRule {
+    param (
+        [Parameter(Mandatory)]
+        [ValidateSet('HTTP','HTTPS')]
+        [string]$Transport,
 
-trap {
-    Write-Log -Level Error -Message "Unhandled error: $($_.Exception.Message)"
-    exit 1
-}
+        [Parameter(Mandatory)]
+        [int]$Port
+    )
 
-if (-not $script:IsAdmin) {
-    Write-Log -Level Error -Message "This script must be run as Administrator."
-    Write-Log -Level Error -Message "Please re-run it in an elevated PowerShell session."
-    exit 1
+    $ruleName = "WinRM-$Transport-$Port"
+
+    $existingRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
+
+    if ($existingRule) {
+        Write-Log -Level Info -Message "Firewall rule '$ruleName' already exists. Ensuring correct settings..."
+        $existingRule |
+            Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow |
+            Out-Null
+
+        Get-NetFirewallPortFilter -AssociatedNetFirewallRule $existingRule |
+            Set-NetFirewallPortFilter -LocalPort $Port -Protocol TCP |
+            Out-Null
+    }
+    else {
+        Write-Log -Level Info -Message "Creating firewall rule '$ruleName'..."
+        New-NetFirewallRule `
+            -Name $ruleName `
+            -DisplayName $ruleName `
+            -Description "Allow WinRM $Transport ($Port) for Ansible" `
+            -Direction Inbound `
+            -Protocol TCP `
+            -LocalPort $Port `
+            -Action Allow `
+            -Profile Domain,Private,Public |
+            Out-Null
+    }
 }
 
 # -------------------------------------------------------------------
-# Preserve sign-in UX (conservative): detect pre-state BEFORE creating service user
+# Registry helper
 # -------------------------------------------------------------------
-$script:PreserveNoClickUX = $false
+function Set-RegistryValue {
+    param (
+        [Parameter(Mandatory)]
+        [string] $Path,
 
-# Skip on domain-joined systems
-$domainJoined = $false
-try {
-    $cs = Get-CimInstance Win32_ComputerSystem
-    $domainJoined = [bool]$cs.PartOfDomain
-} catch {}
+        [Parameter(Mandatory)]
+        [string] $Name,
 
-# Skip if lock screen already managed by policy/GPO
-$polPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
-$lockPolicyManaged = $false
-try {
-    $null = Get-ItemProperty -Path $polPath -Name 'NoLockScreen' -ErrorAction Stop
-    $lockPolicyManaged = $true
-} catch {}
+        [Parameter(Mandatory)]
+        [object] $Value,
 
-if (-not $domainJoined -and -not $lockPolicyManaged) {
+        [Parameter(Mandatory)]
+        [Microsoft.Win32.RegistryValueKind] $Type,
+
+        [string] $ChangeLabel
+    )
+
     try {
-        # enabled local users excluding built-ins and the service user name (even if it exists already)
-        $preUsers = Get-LocalUser | Where-Object {
-            $_.Enabled -eq $true -and
-            $_.Name -notin @('Administrator','Guest','DefaultAccount','WDAGUtilityAccount') -and
-            $_.Name -ne $ServiceUserName
+        if (-not (Test-Path $Path)) {
+            New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
         }
 
-        if ($preUsers.Count -eq 1) {
-            $u = $preUsers[0]
+        $current = (Get-ItemProperty `
+            -Path $Path `
+            -Name $Name `
+            -ErrorAction SilentlyContinue
+        ).$Name
 
-            # Very conservative: only if password is NOT required (your case)
-            if ($u.PasswordRequired -eq $false) {
+        if ($current -ne $Value) {
+            New-ItemProperty `
+                -Path $Path `
+                -Name $Name `
+                -Value $Value `
+                -PropertyType $Type `
+                -Force `
+                -ErrorAction Stop | Out-Null
 
-                # Also conservative: do nothing if there are other interactive sessions around
-                if (-not (Test-HasOtherInteractiveSessions -AllowedUser $u.Name)) {
-                    $script:PreserveNoClickUX = $true
-                    $script:PrimaryInteractiveUser = $u.Name
-                }
-            }
+            if ($ChangeLabel) { $script:RegChanges += $ChangeLabel }
         }
-    } catch {}
+    }
+    catch {
+        throw "Failed to configure registry value '$Name' at '$Path': $($_.Exception.Message)"
+    }
 }
 
 function Disable-LockScreen {
@@ -474,6 +504,66 @@ function New-AnsibleServiceUser {
     Write-Log -Level Info -Message "Service user '$UserName' created and hardened."
 }
 
+Initialize-EventLogSource
+Initialize-LogRoot
+Initialize-LogFile
+
+trap {
+    Write-Log -Level Error -Message "Unhandled error: $($_.Exception.Message)"
+    exit 1
+}
+
+if (-not $script:IsAdmin) {
+    Write-Log -Level Error -Message "This script must be run as Administrator."
+    Write-Log -Level Error -Message "Please re-run it in an elevated PowerShell session."
+    exit 1
+}
+
+# -------------------------------------------------------------------
+# Preserve sign-in UX (conservative): detect pre-state BEFORE creating service user
+# -------------------------------------------------------------------
+$script:PreserveNoClickUX = $false
+
+# Skip on domain-joined systems
+$domainJoined = $false
+try {
+    $cs = Get-CimInstance Win32_ComputerSystem
+    $domainJoined = [bool]$cs.PartOfDomain
+} catch {}
+
+# Skip if lock screen already managed by policy/GPO
+$polPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Personalization'
+$lockPolicyManaged = $false
+try {
+    $null = Get-ItemProperty -Path $polPath -Name 'NoLockScreen' -ErrorAction Stop
+    $lockPolicyManaged = $true
+} catch {}
+
+if (-not $domainJoined -and -not $lockPolicyManaged) {
+    try {
+        # enabled local users excluding built-ins and the service user name (even if it exists already)
+        $preUsers = Get-LocalUser | Where-Object {
+            $_.Enabled -eq $true -and
+            $_.Name -notin @('Administrator','Guest','DefaultAccount','WDAGUtilityAccount') -and
+            $_.Name -ne $ServiceUserName
+        }
+
+        if ($preUsers.Count -eq 1) {
+            $u = $preUsers[0]
+
+            # Very conservative: only if password is NOT required (your case)
+            if ($u.PasswordRequired -eq $false) {
+
+                # Also conservative: do nothing if there are other interactive sessions around
+                if (-not (Test-HasOtherInteractiveSessions -AllowedUser $u.Name)) {
+                    $script:PreserveNoClickUX = $true
+                    $script:PrimaryInteractiveUser = $u.Name
+                }
+            }
+        }
+    } catch {}
+}
+
 if ($NewUser) {
     New-AnsibleServiceUser `
         -UserName $ServiceUserName `
@@ -501,48 +591,6 @@ if (-not $Port) {
 Write-Log -Level Info -Message "=== Configuring WinRM for Ansible ==="
 
 # -------------------------------------------------------------------
-# 4. Firewall rules for all profiles (Domain, Private, Public) - ensure rule exists and applies to all profiles
-# -------------------------------------------------------------------
-function Set-WinRMFirewallRule {
-    param (
-        [Parameter(Mandatory)]
-        [ValidateSet('HTTP','HTTPS')]
-        [string]$Transport,
-
-        [Parameter(Mandatory)]
-        [int]$Port
-    )
-
-    $ruleName = "WinRM-$Transport-$Port"
-
-    $existingRule = Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue
-
-    if ($existingRule) {
-        Write-Log -Level Info -Message "Firewall rule '$ruleName' already exists. Ensuring correct settings..."
-        $existingRule |
-            Set-NetFirewallRule -Profile Domain,Private,Public -Direction Inbound -Action Allow |
-            Out-Null
-
-        Get-NetFirewallPortFilter -AssociatedNetFirewallRule $existingRule |
-            Set-NetFirewallPortFilter -LocalPort $Port -Protocol TCP |
-            Out-Null
-    }
-    else {
-        Write-Log -Level Info -Message "Creating firewall rule '$ruleName'..."
-        New-NetFirewallRule `
-            -Name $ruleName `
-            -DisplayName $ruleName `
-            -Description "Allow WinRM $Transport ($Port) for Ansible" `
-            -Direction Inbound `
-            -Protocol TCP `
-            -LocalPort $Port `
-            -Action Allow `
-            -Profile Domain,Private,Public |
-            Out-Null
-    }
-}
-
-# -------------------------------------------------------------------
 # 0. Fix: handle systems with Public network profiles early
 # -------------------------------------------------------------------
 if (-not $SkipNetworkFix) {
@@ -564,52 +612,6 @@ if (-not $SkipNetworkFix) {
 # -------------------------------------------------------------------
 # 1. Apply persistent WinRM policy keys
 # -------------------------------------------------------------------
-
-function Set-RegistryValue {
-    param (
-        [Parameter(Mandatory)]
-        [string] $Path,
-
-        [Parameter(Mandatory)]
-        [string] $Name,
-
-        [Parameter(Mandatory)]
-        [object] $Value,
-
-        [Parameter(Mandatory)]
-        [Microsoft.Win32.RegistryValueKind] $Type,
-
-        [string] $ChangeLabel
-    )
-
-    try {
-        if (-not (Test-Path $Path)) {
-            New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
-        }
-
-        $current = (Get-ItemProperty `
-            -Path $Path `
-            -Name $Name `
-            -ErrorAction SilentlyContinue
-        ).$Name
-
-        if ($current -ne $Value) {
-            New-ItemProperty `
-                -Path $Path `
-                -Name $Name `
-                -Value $Value `
-                -PropertyType $Type `
-                -Force `
-                -ErrorAction Stop | Out-Null
-
-            if ($ChangeLabel) { $script:RegChanges += $ChangeLabel }
-        }
-    }
-    catch {
-        throw "Failed to configure registry value '$Name' at '$Path': $($_.Exception.Message)"
-    }
-}
-
 Write-Log -Level Info -Message "Ensuring WinRM policy registry settings are correctly configured..."
 
 $script:RegChanges = @()
