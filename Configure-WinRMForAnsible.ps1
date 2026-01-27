@@ -995,7 +995,4 @@ if ($UseHTTPS) {
     Write-Log -Level Info -Message "Certificate Thumbprint: $curThumb"
 }
 
-Write-Log -Level Info -Message "Now you can test from Ansible:"
-Write-Log -Level Info -Message "  ansible windows -i inventory.ini -m ansible.windows.win_ping"
-
 exit $script:ExitCode
