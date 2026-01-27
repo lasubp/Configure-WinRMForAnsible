@@ -958,8 +958,20 @@ catch {
 # 6. TrustedHosts configuration
 # -------------------------------------------------------------------
 if ($TrustedHosts) {
-    Write-Log -Level Info -Message "Setting TrustedHosts to '$TrustedHosts'..."
-    Set-Item WSMan:\localhost\Client\TrustedHosts -Value $TrustedHosts -Force
+    try {
+        $currentTrusted = (Get-Item WSMan:\localhost\Client\TrustedHosts -ErrorAction Stop).Value
+        if ($currentTrusted -ne $TrustedHosts) {
+            Write-Log -Level Info -Message "Setting TrustedHosts to '$TrustedHosts'..."
+            Set-Item WSMan:\localhost\Client\TrustedHosts -Value $TrustedHosts -Force
+        }
+        else {
+            Write-Log -Level Info -Message "TrustedHosts already set to '$TrustedHosts'"
+        }
+    }
+    catch {
+        Write-Log -Level Warn -Message "Failed to read current TrustedHosts; attempting to set anyway."
+        Set-Item WSMan:\localhost\Client\TrustedHosts -Value $TrustedHosts -Force
+    }
 }
 
 # -------------------------------------------------------------------
