@@ -1,35 +1,31 @@
-# Configure-WinRMForAnsible.ps1
+# Configure-WinRMForAnsible
 
-## Automated WinRM setup for Windows clients managed by Ansible (HTTP & HTTPS)
+PowerShell scripts to configure Windows hosts for Ansible over WinRM (HTTP or HTTPS), plus a bootstrapper that can elevate and set up a SYSTEM self-heal task.
 
-This PowerShell script automatically configures Windows systems for remote management with **Ansible over WinRM**, supporting both **HTTP (port 5985)** and **HTTPS (port 5986)**.
-It runs fully unattended, fixes Public network restrictions, and can be safely re-run anytime.
+## Scripts
 
----
+- `Configure-WinRMForAnsible.ps1`: main configuration script (requires Admin).
+- `bootstrap.ps1`: helper that downloads the latest main script, optionally elevates, and creates a SYSTEM scheduled task for startup self-heal.
 
-## 🧩 Features
+## Requirements
 
-* Enables PowerShell Remoting and the WinRM service
-* Works on **Public**, **Private**, and **Domain** networks
-* Supports **HTTP** (default) and **HTTPS** with self-signed certificates
-* Adds firewall rules for all network profiles
-* Enables **Basic** and **Negotiate** authentication
-* Optionally allows unencrypted traffic (useful for testing or lab setups)
-* Automatically configures `TrustedHosts`
-* Idempotent — can be re-run safely without side effects
+- Windows 10 / 11 / Server 2016+
+- PowerShell 5.1+
+- Must run main script as Administrator
 
----
+## What the main script does
 
-## ⚙️ Requirements
+- Applies WinRM policy registry keys
+- Enables and starts WinRM service (delayed auto)
+- Creates HTTP or HTTPS listeners (self-signed cert for HTTPS if needed)
+- Adds firewall rules for all network profiles
+- Configures authentication (Basic + Negotiate; optional CredSSP)
+- Configures TrustedHosts (idempotent)
+- Optional local service user creation and hardening
+- Optional lock-screen UX preservation for single-user desktops
+- Logs to file and optionally Event Log
 
-* Run as **Administrator**
-* Windows 10 / 11 / Server 2016 or later
-* PowerShell 5.1+
-* Ansible controller with the `pywinrm` Python module installed
-
----
-
-## 🚀 Usage
+## Usage (main script)
 
 ### Basic (HTTP)
 
@@ -37,50 +33,88 @@ It runs fully unattended, fixes Public network restrictions, and can be safely r
 powershell.exe -ExecutionPolicy Bypass -File .\Configure-WinRMForAnsible.ps1
 ```
 
-### With custom TrustedHosts
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Configure-WinRMForAnsible.ps1 -TrustedHosts "192.168.*,10.0.*"
-```
-
-### Enable HTTPS (port 5986)
+### HTTPS (self-signed)
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\Configure-WinRMForAnsible.ps1 -UseHTTPS -TrustedHosts "*"
 ```
 
-This creates a **self-signed certificate** (if none exists) and binds it to the WinRM HTTPS listener.
-The certificate is automatically stored in the **LocalMachine\My** store.
-
----
-
-## 🧰 Available Parameters
-
-| Parameter           | Description                                                              | Default  |
-| ------------------- | ------------------------------------------------------------------------ | -------- |
-| `-UseHTTPS`         | Enables and configures HTTPS listener on port **5986**                   | Disabled |
-| `-Port`             | Port to use (5985 for HTTP, 5986 for HTTPS)                              | Auto     |
-| `-TrustedHosts`     | Comma-separated list of allowed hosts (e.g. `"*"`, `"192.168.*,10.0.*"`) | `*`      |
-| `-AllowUnencrypted` | Allow unencrypted communication (HTTP only)                              | `$true`  |
-| `-SkipNetworkFix`   | Skip automatic conversion of Public → Private networks                   | `$false` |
-| `-Verbose`          | Show detailed output                                                     | —        |
-
-**Example:**
+### Custom TrustedHosts
 
 ```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Configure-WinRMForAnsible.ps1 -UseHTTPS -TrustedHosts "192.168.9.*,10.10.*" -Verbose
+powershell.exe -ExecutionPolicy Bypass -File .\Configure-WinRMForAnsible.ps1 -TrustedHosts "192.168.*,10.0.*"
 ```
 
----
+### Create a local service user
 
-## 🧩 Example Ansible Inventory (HTTPS)
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\Configure-WinRMForAnsible.ps1 `
+  -NewUser -ServiceUserName ansible_svc -ServiceUserPassFile C:\Temp\ansible.pass
+```
+
+## Usage (bootstrap)
+
+`bootstrap.ps1` is designed to be run from a user session. It will:
+
+- If not admin: create a Startup launcher and prompt for UAC elevation.
+- If admin: download the main script and create a SYSTEM scheduled task to run it at startup.
+- If SYSTEM: download and run the main script silently.
+
+Example (pass through main script args):
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\bootstrap.ps1 -UseHTTPS -TrustedHosts "*"
+```
+
+## Logging
+
+### Main script
+
+- Default log file (elevated runs only): `C:\ProgramData\Configure-WinRMForAnsible\Configure-WinRMForAnsible.log`
+- Non-elevated runs do not write the default log unless you explicitly pass `-LogPath`.
+- Console output is user-friendly (no timestamps); log file keeps timestamps.
+- Event Log is enabled by default and can be disabled.
+
+Options:
+
+- `-LogPath` to log to a custom path (any user-writable location).
+- `-LogFormat text|json` (default: `text`).
+- `-DisableEventLog` to skip Event Viewer logging.
+- `-FriendlyErrors:$false` to use PowerShell error records instead of friendly console messages.
+
+### Bootstrap
+
+- Always logs to a single file, even on first non-elevated run:
+  `C:\Users\Public\Documents\Configure-WinRMForAnsible\bootstrap.log`
+- Sensitive args are sanitized in the log (`-ServiceUserPass` is masked).
+
+## Parameters (main script)
+
+| Parameter | Description | Default |
+| --- | --- | --- |
+| `-UseHTTPS` | Enable HTTPS listener and certificate management | Disabled |
+| `-Port` | Custom port (5985 HTTP / 5986 HTTPS) | Auto |
+| `-TrustedHosts` | TrustedHosts value | `*` |
+| `-AllowUnencrypted` | Allow unencrypted traffic (HTTP only) | `$true` |
+| `-SkipNetworkFix` | Skip Public -> Private network change | `$false` |
+| `-EnableCredSSP` | Enable CredSSP authentication | `$false` |
+| `-NewUser` | Create a local service user | `$false` |
+| `-ServiceUserName` | Service user name | `ansible_svc` |
+| `-ServiceUserPass` | Service user password (unsafe on CLI) | — |
+| `-ServiceUserPassFile` | File containing service user password | — |
+| `-LogPath` | Custom log file path | — |
+| `-LogFormat` | `text` or `json` | `text` |
+| `-DisableEventLog` | Disable Event Viewer logging | `$false` |
+| `-FriendlyErrors` | Friendly console errors | `$true` |
+
+## Example Ansible inventory (HTTPS)
 
 ```yaml
 all:
   children:
     windows:
       hosts:
-        win11-secure:
+        winhost:
           ansible_host: 192.168.9.120
           ansible_user: admin
           ansible_password: "StrongPass123"
@@ -90,80 +124,29 @@ all:
           ansible_winrm_server_cert_validation: ignore
 ```
 
-**Test connection:**
+Test:
 
 ```bash
 ansible -i inventory.yml windows -m win_ping
 ```
 
----
-
-## 🧼 Notes
-
-* The script automatically detects Public networks and temporarily switches them to Private to enable WinRM configuration.
-  Disable this behavior with `-SkipNetworkFix` if you prefer manual control.
-* In HTTPS mode:
-
-  * A **self-signed certificate** is created if no valid certificate exists.
-  * The certificate’s CN matches the host IP and computer name.
-* For production use:
-
-  * Replace the self-signed certificate with a CA-issued certificate.
-  * Restrict `TrustedHosts` to specific trusted ranges.
-  * Disable `AllowUnencrypted` for better security.
-
----
-
-## 🧪 Troubleshooting
-
-Use these PowerShell commands to verify or diagnose WinRM configuration:
-
-### Check existing listeners
+## Troubleshooting
 
 ```powershell
 winrm enumerate winrm/config/listener
-```
-
-### Test local WinRM connectivity
-
-```powershell
 Test-WsMan localhost
-```
-
-### Check WinRM firewall rules
-
-```powershell
 Get-NetFirewallRule | Where-Object DisplayName -like "*WinRM*"
-```
-
-### Restart WinRM service
-
-```powershell
 Restart-Service WinRM -Force
-```
-
-### Check authentication and encryption settings
-
-```powershell
 winrm get winrm/config/service
 winrm get winrm/config/service/auth
 ```
 
-If issues persist, rerun the script with `-Verbose` for detailed output:
+## Notes and security
 
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Configure-WinRMForAnsible.ps1 -Verbose
-```
+- For production, use CA-issued certificates and restrict TrustedHosts.
+- Avoid `-ServiceUserPass` on the command line; prefer `-ServiceUserPassFile`.
+- `bootstrap.ps1` downloads the main script from a URL; review and pin it for production use.
 
----
+## License
 
-## 🪄 Re-run Anytime
-
-The script checks existing listeners, certificates, and firewall rules before applying changes.
-It’s safe to re-run on multiple systems or during provisioning.
-
----
-
-## 📄 License
-
-MIT License — use, modify, and distribute freely.
+MIT License.
