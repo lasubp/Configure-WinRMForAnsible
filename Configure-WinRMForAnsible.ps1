@@ -11,6 +11,7 @@
   - Configures authentication and TrustedHosts
   - Auto-manages HTTPS certificate lifecycle (create/renew/cleanup) when -UseHTTPS is used
   - Optionally creates a local non-interactive admin service user when -NewUser is used
+  - Writes structured logs to file (and optional Event Log) with friendly console output
   - No user interaction required
 #>
 
@@ -591,7 +592,7 @@ if (-not $Port) {
 Write-Log -Level Info -Message "=== Configuring WinRM for Ansible ==="
 
 # -------------------------------------------------------------------
-# 0. Fix: handle systems with Public network profiles early
+# Handle systems with Public network profiles early
 # -------------------------------------------------------------------
 if (-not $SkipNetworkFix) {
     Write-Log -Level Info -Message "Checking network profile..."
@@ -610,7 +611,7 @@ if (-not $SkipNetworkFix) {
 }
 
 # -------------------------------------------------------------------
-# 1. Apply persistent WinRM policy keys
+# Apply persistent WinRM policy keys
 # -------------------------------------------------------------------
 Write-Log -Level Info -Message "Ensuring WinRM policy registry settings are correctly configured..."
 
@@ -682,7 +683,7 @@ try {
 }
 
 # -------------------------------------------------------------------
-# 2. Enable PS Remoting / WinRM service
+# Enable PS Remoting / WinRM service
 # -------------------------------------------------------------------
 Write-Log -Level Info -Message "Ensuring WinRM service is correctly configured..."
 
@@ -719,7 +720,7 @@ catch {
 }
 
 # -------------------------------------------------------------------
-# 3. Create listener(s) (HTTPS optional) and manage HTTPS cert lifecycle
+# Create listener(s) (HTTPS optional) and manage HTTPS cert lifecycle
 # -------------------------------------------------------------------
 if ($UseHTTPS) {
     Write-Log -Level Info -Message "Configuring HTTPS listener on port $Port..."
@@ -740,7 +741,7 @@ if ($UseHTTPS) {
             Select-Object -ExpandProperty IPAddress -First 1
 
         # ------------------------------------------------------------
-        # 1. Read existing HTTPS listener (do NOT delete blindly)
+        # Read existing HTTPS listener (do NOT delete blindly)
         # ------------------------------------------------------------
         $listenerText = winrm get winrm/config/Listener?Address=*+Transport=HTTPS 2>$null
         $currentThumb = $null
@@ -750,7 +751,7 @@ if ($UseHTTPS) {
             $currentThumb = $Matches[1]
         }
         # ------------------------------------------------------------
-        # 2. Try to reuse an existing valid certificate
+        # Try to reuse an existing valid certificate
         # ------------------------------------------------------------
         $cert = $null
 
@@ -769,7 +770,7 @@ if ($UseHTTPS) {
         }
 
         # ------------------------------------------------------------
-        # 3. Validate cert hostname / SAN
+        # Validate cert hostname / SAN
         # ------------------------------------------------------------
         $certValid = $false
 
@@ -796,7 +797,7 @@ if ($UseHTTPS) {
         }
 
         # ------------------------------------------------------------
-        # 4. Create cert ONLY if required
+        # Create cert ONLY if required
         # ------------------------------------------------------------
         if (-not $certValid) {
             Write-Log -Level Info -Message "Creating new self-signed certificate for WinRM HTTPS..."
@@ -811,7 +812,7 @@ if ($UseHTTPS) {
         }
 
         # ------------------------------------------------------------
-        # 5. Ensure listener exists and is bound to correct cert
+        # Ensure listener exists and is bound to correct cert
         # ------------------------------------------------------------
         $needsListener = $true
 
@@ -835,7 +836,7 @@ if ($UseHTTPS) {
         }
 
         # ------------------------------------------------------------
-        # 6. Safe cleanup: remove expired or truly unused WinRM certs
+        # Safe cleanup: remove expired or truly unused WinRM certs
         # ------------------------------------------------------------
         try {
             Write-Log -Level Info -Message "Performing WinRM certificate cleanup..."
@@ -895,7 +896,7 @@ if ($UseHTTPS) {
 }
 
 # -------------------------------------------------------------------
-# 5. Configure WinRM authentication & transport settings
+# Configure WinRM authentication & transport settings
 # -------------------------------------------------------------------
 Write-Log -Level Info -Message "Ensuring WinRM authentication settings are correctly configured..."
 
@@ -957,7 +958,7 @@ catch {
 
 
 # -------------------------------------------------------------------
-# 6. TrustedHosts configuration
+# TrustedHosts configuration
 # -------------------------------------------------------------------
 if ($TrustedHosts) {
     try {
@@ -977,7 +978,7 @@ if ($TrustedHosts) {
 }
 
 # -------------------------------------------------------------------
-# 7. Restart WinRM and confirm
+# Restart WinRM and confirm
 # -------------------------------------------------------------------
 Restart-Service WinRM -Force
 
