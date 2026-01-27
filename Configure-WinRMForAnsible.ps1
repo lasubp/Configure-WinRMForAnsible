@@ -163,16 +163,20 @@ function Write-Log {
     )
 
     $formatted = Format-LogLine -Level $Level -Message $Message
+    $consoleMessage = $Message
+    if ($script:LogFormat -eq 'json') {
+        $consoleMessage = $formatted
+    }
 
     switch ($Level) {
-        'Info'  { Write-Output $formatted }
-        'Warn'  { Write-Warning $formatted }
+        'Info'  { Write-Output $consoleMessage }
+        'Warn'  { Write-Warning $consoleMessage }
         'Error' {
             if ($script:FriendlyErrors) {
-                Write-Host $formatted -ForegroundColor Red
+                Write-Host $consoleMessage -ForegroundColor Red
             }
             else {
-                Write-Error $formatted
+                Write-Error $consoleMessage
             }
             $script:ExitCode = 1
         }
