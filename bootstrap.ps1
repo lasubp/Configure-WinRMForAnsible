@@ -1,7 +1,7 @@
 # -----------------------------------------
 # CONFIGURATION
 # -----------------------------------------
-$MainURL        = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
+$MainURL        = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-WinRMForAnsible.ps1"
 $WorkDir        = "$env:ProgramData\Configure-WinRM"
 $LocalMain      = "$WorkDir\Configure-WinRMForAnsible.ps1"
 $LocalBootstrap = "$WorkDir\bootstrap.ps1"
