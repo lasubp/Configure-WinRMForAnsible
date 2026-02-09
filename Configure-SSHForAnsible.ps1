@@ -315,7 +315,7 @@ function Set-SSHDConfig {
     $raw = Get-Content $ConfigPath -Raw
     $lines = $raw -split "`r?`n"
 
-    function Upsert-ConfigLine {
+    function Set-ConfigLine {
         param(
             [string]$Key,
             [string]$Value
@@ -335,21 +335,21 @@ function Set-SSHDConfig {
         }
     }
 
-    Upsert-ConfigLine -Key 'Port' -Value $Port
-    Upsert-ConfigLine -Key 'PasswordAuthentication' -Value ($PasswordAuth ? 'yes' : 'no')
-    Upsert-ConfigLine -Key 'PubkeyAuthentication' -Value ($PubkeyAuth ? 'yes' : 'no')
-    Upsert-ConfigLine -Key 'KbdInteractiveAuthentication' -Value ($PasswordAuth ? 'yes' : 'no')
-    Upsert-ConfigLine -Key 'PermitEmptyPasswords' -Value 'no'
-    Upsert-ConfigLine -Key 'PermitRootLogin' -Value 'no'
-    Upsert-ConfigLine -Key 'GSSAPIAuthentication' -Value 'no'
-    Upsert-ConfigLine -Key 'AuthorizedKeysFile' -Value '.ssh/authorized_keys'
+    Set-ConfigLine -Key 'Port' -Value $Port
+    Set-ConfigLine -Key 'PasswordAuthentication' -Value ($PasswordAuth ? 'yes' : 'no')
+    Set-ConfigLine -Key 'PubkeyAuthentication' -Value ($PubkeyAuth ? 'yes' : 'no')
+    Set-ConfigLine -Key 'KbdInteractiveAuthentication' -Value ($PasswordAuth ? 'yes' : 'no')
+    Set-ConfigLine -Key 'PermitEmptyPasswords' -Value 'no'
+    Set-ConfigLine -Key 'PermitRootLogin' -Value 'no'
+    Set-ConfigLine -Key 'GSSAPIAuthentication' -Value 'no'
+    Set-ConfigLine -Key 'AuthorizedKeysFile' -Value '.ssh/authorized_keys'
 
     if ($AllowSftp) {
-        Upsert-ConfigLine -Key 'Subsystem' -Value 'sftp sftp-server.exe'
+        Set-ConfigLine -Key 'Subsystem' -Value 'sftp sftp-server.exe'
     }
 
     if ($AllowUsers -and $AllowUsers.Count -gt 0) {
-        Upsert-ConfigLine -Key 'AllowUsers' -Value ($AllowUsers -join ' ')
+        Set-ConfigLine -Key 'AllowUsers' -Value ($AllowUsers -join ' ')
     }
 
     $lines -join "`r`n" | Set-Content -Path $ConfigPath -Encoding Ascii
@@ -396,8 +396,8 @@ function Set-AuthorizedKeys {
     }
 
     # Secure permissions: user + SYSTEM + Administrators
-    & icacls $authKeys /inheritance:r /grant "$TargetUser:(R)" "SYSTEM:(F)" "Administrators:(F)" | Out-Null
-    & icacls $sshDir /inheritance:r /grant "$TargetUser:(F)" "SYSTEM:(F)" "Administrators:(F)" | Out-Null
+    & icacls $authKeys /inheritance:r /grant "${TargetUser}:(R)" "SYSTEM:(F)" "Administrators:(F)" | Out-Null
+    & icacls $sshDir /inheritance:r /grant "${TargetUser}:(F)" "SYSTEM:(F)" "Administrators:(F)" | Out-Null
 }
 
 # -------------------------------------------------------------------
