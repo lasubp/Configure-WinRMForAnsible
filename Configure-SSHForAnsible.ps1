@@ -246,7 +246,7 @@ function Set-SSHFirewallRule {
     }
 }
 
-function Ensure-OpenSSHInstalled {
+function Set-OpenSSHInstalled {
     Write-Log -Level Info -Message "Ensuring OpenSSH.Server is installed..."
     try {
         $cap = Get-WindowsCapability -Online -Name OpenSSH.Server* -ErrorAction Stop | Select-Object -First 1
@@ -266,7 +266,7 @@ function Ensure-OpenSSHInstalled {
     }
 }
 
-function Ensure-SSHDService {
+function Set-SSHDService {
     Write-Log -Level Info -Message "Ensuring sshd service is enabled and running..."
     try {
         $svc = Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
@@ -298,7 +298,7 @@ function Set-DefaultShell {
     }
 }
 
-function Ensure-SSHDConfig {
+function Set-SSHDConfig {
     param(
         [Parameter(Mandatory)][string]$ConfigPath,
         [Parameter(Mandatory)][int]$Port,
@@ -355,7 +355,7 @@ function Ensure-SSHDConfig {
     $lines -join "`r`n" | Set-Content -Path $ConfigPath -Encoding Ascii
 }
 
-function Ensure-AuthorizedKeys {
+function Set-AuthorizedKeys {
     param(
         [Parameter(Mandatory)][string]$TargetUser,
         [string]$PublicKeyFile,
@@ -375,12 +375,12 @@ function Ensure-AuthorizedKeys {
     $user = Get-LocalUser -Name $TargetUser -ErrorAction Stop
     $sid = $user.SID.Value
 
-    $profile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
-    if (-not $profile) {
-        $profile = "C:\Users\$TargetUser"
+    $userProfilePath = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid }).LocalPath
+    if (-not $userProfilePath) {
+        $userProfilePath = "C:\Users\$TargetUser"
     }
 
-    $sshDir = Join-Path $profile '.ssh'
+    $sshDir = Join-Path $userProfilePath '.ssh'
     if (-not (Test-Path $sshDir)) {
         New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
     }
@@ -568,12 +568,12 @@ if ($NewUser) {
 
 Write-Log -Level Info -Message "=== Configuring OpenSSH for Ansible ==="
 
-Ensure-OpenSSHInstalled
-Ensure-SSHDService
+Set-OpenSSHInstalled
+Set-SSHDService
 Set-DefaultShell -ShellPath $DefaultShell
 
 $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
-Ensure-SSHDConfig `
+Set-SSHDConfig `
     -ConfigPath $sshdConfig `
     -Port $Port `
     -PasswordAuth:$AllowPasswordAuth `
@@ -582,10 +582,10 @@ Ensure-SSHDConfig `
     -AllowUsers $AllowUsers
 
 if ($NewUser -and $PublicKeyFile) {
-    Ensure-AuthorizedKeys -TargetUser $ServiceUserName -PublicKeyFile $PublicKeyFile -AuthorizedKeysPath $AuthorizedKeysPath
+    Set-AuthorizedKeys -TargetUser $ServiceUserName -PublicKeyFile $PublicKeyFile -AuthorizedKeysPath $AuthorizedKeysPath
 }
 elseif ($PublicKeyFile -and $AllowUsers -and $AllowUsers.Count -eq 1) {
-    Ensure-AuthorizedKeys -TargetUser $AllowUsers[0] -PublicKeyFile $PublicKeyFile -AuthorizedKeysPath $AuthorizedKeysPath
+    Set-AuthorizedKeys -TargetUser $AllowUsers[0] -PublicKeyFile $PublicKeyFile -AuthorizedKeysPath $AuthorizedKeysPath
 }
 
 Set-SSHFirewallRule -Port $Port
