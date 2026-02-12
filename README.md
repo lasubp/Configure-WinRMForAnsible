@@ -7,6 +7,27 @@ PowerShell scripts to configure Windows hosts for Ansible over WinRM (HTTP or HT
 - `Configure-WinRMForAnsible.ps1`: main configuration script (requires Admin).
 - `Configure-SSHForAnsible.ps1`: OpenSSH configuration script (requires Admin).
 - `bootstrap.ps1`: helper that downloads the latest main script, optionally elevates, and creates a SYSTEM scheduled task for startup self-heal.
+- `Configure-AnsibleRemoting.ps1`: unified single-file entrypoint that combines all three modes (`WinRM`, `SSH`, `Bootstrap`).
+
+## Unified single-file usage
+
+### WinRM (default mode)
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\Configure-AnsibleRemoting.ps1 -UseHTTPS -TrustedHosts "*"
+```
+
+### OpenSSH mode
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\Configure-AnsibleRemoting.ps1 -Mode SSH -Port 22
+```
+
+### Bootstrap mode
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\Configure-AnsibleRemoting.ps1 -Mode Bootstrap -UseHTTPS -TrustedHosts "*"
+```
 
 ## Requirements
 
@@ -81,13 +102,17 @@ powershell.exe -ExecutionPolicy Bypass -File .\Configure-SSHForAnsible.ps1 `
 `bootstrap.ps1` is designed to be run from a user session. It will:
 
 - If not admin: create a Startup launcher and prompt for UAC elevation.
-- If admin: download the main script and create a SYSTEM scheduled task to run it at startup.
-- If SYSTEM: download and run the main script silently.
+- If admin: download the selected main script and create a SYSTEM scheduled task.
+- If SYSTEM: download and run the selected main script silently.
 
-Example (pass through main script args):
+Examples (pass through target script args):
 
 ```powershell
 powershell.exe -ExecutionPolicy Bypass -File .\bootstrap.ps1 -UseHTTPS -TrustedHosts "*"
+```
+
+```powershell
+powershell.exe -ExecutionPolicy Bypass -File .\bootstrap.ps1 -Mode SSH -Port 22
 ```
 
 ## Logging
@@ -113,8 +138,9 @@ Options:
 
 ### Bootstrap
 
-- Always logs to a single file, even on first non-elevated run:
-  `C:\Users\Public\Documents\Configure-WinRMForAnsible\bootstrap.log`
+- Logs to a mode-specific file, even on first non-elevated run:
+  - WinRM mode: `C:\Users\Public\Documents\Configure-WinRMForAnsible\bootstrap.log`
+  - SSH mode: `C:\Users\Public\Documents\Configure-SSHForAnsible\bootstrap.log`
 - Sensitive args are sanitized in the log (`-ServiceUserPass` is masked).
 
 ## Parameters (main script)
@@ -195,6 +221,7 @@ winrm get winrm/config/service/auth
 
 - For production, use CA-issued certificates and restrict TrustedHosts.
 - Avoid `-ServiceUserPass` on the command line; prefer `-ServiceUserPassFile`.
+- When `-ServiceUserPass` is used with bootstrap, it is converted to a one-time password file and removed from persisted startup args.
 - `bootstrap.ps1` downloads the main script from a URL; review and pin it for production use.
 
 ## License
