@@ -12,7 +12,7 @@ param(
 $ModeSettings = switch ($Mode) {
     'WinRM' {
         @{
-            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-WinRMForAnsible.ps1"
+            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
             WorkDir  = "$env:ProgramData\Configure-WinRM"
             MainFile = 'Configure-WinRMForAnsible.ps1'
             TaskName = 'WinRM-SelfHeal'
@@ -21,7 +21,7 @@ $ModeSettings = switch ($Mode) {
     }
     'SSH' {
         @{
-            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-SSHForAnsible.ps1"
+            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-SSHForAnsible.ps1"
             WorkDir  = "$env:ProgramData\Configure-SSH"
             MainFile = 'Configure-SSHForAnsible.ps1'
             TaskName = 'SSH-SelfHeal'
@@ -165,6 +165,28 @@ function Download-MainScript {
     Write-BootstrapLog -Level Info -Message "Downloaded main script at '$LocalMain'"
 }
 
+function Invoke-MainScript {
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$ArgumentList,
+
+        [Parameter(Mandatory)]
+        [string]$ContextName
+    )
+
+    & powershell.exe @ArgumentList
+    $code = if ($null -ne $LASTEXITCODE) { [int]$LASTEXITCODE } else { 0 }
+
+    if ($code -eq 0) {
+        Write-BootstrapLog -Level Info -Message "Main script executed successfully in $ContextName context."
+    }
+    else {
+        Write-BootstrapLog -Level Warn -Message "Main script execution in $ContextName context failed with exit code $code."
+    }
+
+    return $code
+}
+
 # Raw arguments that should be passed to target script.
 $ForwardArgs = Join-CommandLineArguments -Tokens $PassthroughArgs
 $BootstrapRelaunchArgs = Join-CommandLineArguments -Tokens (@('-Mode', $Mode) + $PassthroughArgs)
@@ -203,8 +225,7 @@ if ($safeArgs) {
 if ($script:IsSystem) {
     try {
         Download-MainScript
-        & powershell.exe @MainArgumentList
-        Write-BootstrapLog -Level Info -Message "Main script executed."
+        [void](Invoke-MainScript -ArgumentList $MainArgumentList -ContextName 'SYSTEM')
     } catch {
         Write-BootstrapLog -Level Error -Message "SYSTEM run failed: $($_.Exception.Message)"
         # SYSTEM should be silent
@@ -256,6 +277,12 @@ if ($script:IsAdmin) {
     # Download main script fresh
     Download-MainScript
 
+    # Execute once in elevated user context so first-run behavior matches manual execution.
+    $adminRunCode = Invoke-MainScript -ArgumentList $MainArgumentList -ContextName 'Admin'
+    if ($adminRunCode -ne 0) {
+        Write-BootstrapLog -Level Warn -Message "Initial admin execution failed; startup self-heal task will still be registered."
+    }
+
     $Action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
         -Argument $MainActionArguments
@@ -274,10 +301,7 @@ if ($script:IsAdmin) {
         -Principal $Principal `
         -Force
     Write-BootstrapLog -Level Info -Message "Scheduled task '$TaskName' created."
-
-    # Run once immediately
-    Start-ScheduledTask -TaskName $TaskName
-    Write-BootstrapLog -Level Info -Message "Scheduled task '$TaskName' started."
+    Write-BootstrapLog -Level Info -Message "Scheduled task '$TaskName' will run at startup for self-heal."
 
     exit
 }
