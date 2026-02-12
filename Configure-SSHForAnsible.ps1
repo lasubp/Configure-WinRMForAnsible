@@ -255,10 +255,7 @@ function Set-OpenSSHInstalled {
         }
         if ($cap.State -ne 'Installed') {
             Write-Log -Level Info -Message "Installing OpenSSH.Server capability..."
-            $result = Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop
-            if ($result.RestartNeeded) {
-                Write-Log -Level Warn -Message "OpenSSH capability install reported RestartNeeded=True. Continuing, but a reboot may still be required."
-            }
+            Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
         }
         else {
             Write-Log -Level Info -Message "OpenSSH.Server already installed."
@@ -269,40 +266,15 @@ function Set-OpenSSHInstalled {
     }
 }
 
-function Get-SSHDServiceWithRetry {
-    param(
-        [int]$TimeoutSeconds = 180,
-        [int]$PollIntervalSeconds = 3
-    )
-
-    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-    do {
-        $svc = Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction SilentlyContinue
-        if ($svc) {
-            return $svc
-        }
-        Start-Sleep -Seconds $PollIntervalSeconds
-    } while ((Get-Date) -lt $deadline)
-
-    return $null
-}
-
 function Set-SSHDService {
     Write-Log -Level Info -Message "Ensuring sshd service is enabled and running..."
     try {
-        $svc = Get-SSHDServiceWithRetry
-        if (-not $svc) {
-            throw "Cannot find service 'sshd' after OpenSSH installation. Reboot the host once and run the script again."
-        }
+        $svc = Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
         if ($svc.StartMode -ne 'Auto') {
             sc.exe config sshd start= auto | Out-Null
         }
         if ($svc.State -ne 'Running') {
             Start-Service sshd -ErrorAction Stop
-        }
-        $running = Get-Service -Name sshd -ErrorAction Stop
-        if ($running.Status -ne 'Running') {
-            throw "Service 'sshd' is present but not running (Status=$($running.Status))."
         }
     }
     catch {
