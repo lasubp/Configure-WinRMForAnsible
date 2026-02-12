@@ -335,10 +335,13 @@ function Set-SSHDConfig {
         }
     }
 
+    $passwordAuthValue = if ($PasswordAuth) { 'yes' } else { 'no' }
+    $pubkeyAuthValue = if ($PubkeyAuth) { 'yes' } else { 'no' }
+
     Set-ConfigLine -Key 'Port' -Value $Port
-    Set-ConfigLine -Key 'PasswordAuthentication' -Value ($PasswordAuth ? 'yes' : 'no')
-    Set-ConfigLine -Key 'PubkeyAuthentication' -Value ($PubkeyAuth ? 'yes' : 'no')
-    Set-ConfigLine -Key 'KbdInteractiveAuthentication' -Value ($PasswordAuth ? 'yes' : 'no')
+    Set-ConfigLine -Key 'PasswordAuthentication' -Value $passwordAuthValue
+    Set-ConfigLine -Key 'PubkeyAuthentication' -Value $pubkeyAuthValue
+    Set-ConfigLine -Key 'KbdInteractiveAuthentication' -Value $passwordAuthValue
     Set-ConfigLine -Key 'PermitEmptyPasswords' -Value 'no'
     Set-ConfigLine -Key 'PermitRootLogin' -Value 'no'
     Set-ConfigLine -Key 'GSSAPIAuthentication' -Value 'no'
