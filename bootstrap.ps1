@@ -1,17 +1,46 @@
+param(
+    [ValidateSet('WinRM','SSH')]
+    [string]$Mode = 'WinRM',
+
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [object[]]$PassthroughArgs
+)
+
 # -----------------------------------------
 # CONFIGURATION
 # -----------------------------------------
-$MainURL             = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-WinRMForAnsible.ps1"
+$ModeSettings = switch ($Mode) {
+    'WinRM' {
+        @{
+            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-WinRMForAnsible.ps1"
+            WorkDir  = "$env:ProgramData\Configure-WinRM"
+            MainFile = 'Configure-WinRMForAnsible.ps1'
+            TaskName = 'WinRM-SelfHeal'
+            LogRoot  = (Join-Path $env:PUBLIC 'Documents\Configure-WinRMForAnsible')
+        }
+    }
+    'SSH' {
+        @{
+            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-SSHForAnsible.ps1"
+            WorkDir  = "$env:ProgramData\Configure-SSH"
+            MainFile = 'Configure-SSHForAnsible.ps1'
+            TaskName = 'SSH-SelfHeal'
+            LogRoot  = (Join-Path $env:PUBLIC 'Documents\Configure-SSHForAnsible')
+        }
+    }
+}
+
+$MainURL             = $ModeSettings.MainURL
 # Optional integrity pin for controlled deployments; leave empty for rolling auto-update.
 $ExpectedMainSHA256  = ""
-$WorkDir        = "$env:ProgramData\Configure-WinRM"
-$LocalMain      = "$WorkDir\Configure-WinRMForAnsible.ps1"
-$LocalBootstrap = "$WorkDir\bootstrap.ps1"
-$Launcher       = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\bootstrap-launch.cmd"
-$TaskName       = "WinRM-SelfHeal"
-$LogRoot        = (Join-Path $env:PUBLIC 'Documents\Configure-WinRMForAnsible')
-$LogPath        = "$LogRoot\bootstrap.log"
-$script:LogEnabled = $false
+$WorkDir             = $ModeSettings.WorkDir
+$LocalMain           = Join-Path $WorkDir $ModeSettings.MainFile
+$LocalBootstrap      = Join-Path $WorkDir 'bootstrap.ps1'
+$Launcher            = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\bootstrap-launch.cmd"
+$TaskName            = $ModeSettings.TaskName
+$LogRoot             = $ModeSettings.LogRoot
+$LogPath             = Join-Path $LogRoot 'bootstrap.log'
+$script:LogEnabled   = $false
 
 # Ensure working directory exists:
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
@@ -78,6 +107,26 @@ function Sanitize-Args {
     return $sanitized
 }
 
+function Join-CommandLineArguments {
+    param([object[]]$Tokens)
+
+    if (-not $Tokens -or $Tokens.Count -eq 0) {
+        return ''
+    }
+
+    return (
+        $Tokens | ForEach-Object {
+            $value = [string]$_
+            if ($value -match '[\s"]') {
+                '"' + ($value -replace '"','`"') + '"'
+            }
+            else {
+                $value
+            }
+        }
+    ) -join ' '
+}
+
 function Test-IsAllowedMainScriptUrl {
     param([Parameter(Mandatory)][string]$Url)
 
@@ -116,16 +165,19 @@ function Download-MainScript {
     Write-BootstrapLog -Level Info -Message "Downloaded main script at '$LocalMain'"
 }
 
-# Raw, tokenized arguments as PowerShell received them
-$ForwardArgs = (
-    $args | ForEach-Object {
-        if ($_ -match '\s') {
-            '"' + ($_ -replace '"','`"') + '"'
-        } else {
-            $_
-        }
-    }
-) -join ' '
+# Raw arguments that should be passed to target script.
+$ForwardArgs = Join-CommandLineArguments -Tokens $PassthroughArgs
+$BootstrapRelaunchArgs = Join-CommandLineArguments -Tokens (@('-Mode', $Mode) + $PassthroughArgs)
+
+$MainArgumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $LocalMain)
+if ($PassthroughArgs) {
+    $MainArgumentList += $PassthroughArgs
+}
+
+$MainActionArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$LocalMain`""
+if ($ForwardArgs) {
+    $MainActionArguments = "$MainActionArguments $ForwardArgs"
+}
 
 $script:IsSystem = Test-IsSystem
 $script:IsAdmin = Test-IsAdmin
@@ -140,7 +192,7 @@ catch {
 }
 
 $safeArgs = Sanitize-Args -ArgsText $ForwardArgs
-Write-BootstrapLog -Level Info -Message "Bootstrap start. User=$env:USERNAME IsAdmin=$script:IsAdmin IsSystem=$script:IsSystem"
+Write-BootstrapLog -Level Info -Message "Bootstrap start. Mode=$Mode User=$env:USERNAME IsAdmin=$script:IsAdmin IsSystem=$script:IsSystem"
 if ($safeArgs) {
     Write-BootstrapLog -Level Info -Message "Args: $safeArgs"
 }
@@ -151,8 +203,7 @@ if ($safeArgs) {
 if ($script:IsSystem) {
     try {
         Download-MainScript
-        powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File $LocalMain $ForwardArgs
+        & powershell.exe @MainArgumentList
         Write-BootstrapLog -Level Info -Message "Main script executed."
     } catch {
         Write-BootstrapLog -Level Error -Message "SYSTEM run failed: $($_.Exception.Message)"
@@ -171,7 +222,7 @@ if (-not (Test-IsAdmin)) {
 setlocal
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden ^
-  -File "$LocalBootstrap" $ForwardArgs
+  -File "$LocalBootstrap" $BootstrapRelaunchArgs
 
     endlocal
 "@
@@ -182,7 +233,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden ^
     # Try invoking UAC — hide "cancelled by user" errors
     try {
         Start-Process powershell.exe -Verb RunAs `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$LocalBootstrap`" $ForwardArgs" `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$LocalBootstrap`" $BootstrapRelaunchArgs" `
             -WindowStyle Hidden -ErrorAction Stop
         Write-BootstrapLog -Level Info -Message "UAC prompt accepted."
     } catch {
@@ -207,7 +258,7 @@ if ($script:IsAdmin) {
 
     $Action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
-        -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$LocalMain`" $ForwardArgs"
+        -Argument $MainActionArguments
 
     $Trigger = New-ScheduledTaskTrigger -AtStartup
 
