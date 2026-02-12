@@ -1,7 +1,9 @@
 # -----------------------------------------
 # CONFIGURATION
 # -----------------------------------------
-$MainURL        = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-WinRMForAnsible.ps1"
+$MainURL             = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-WinRMForAnsible.ps1"
+# Optional integrity pin for controlled deployments; leave empty for rolling auto-update.
+$ExpectedMainSHA256  = ""
 $WorkDir        = "$env:ProgramData\Configure-WinRM"
 $LocalMain      = "$WorkDir\Configure-WinRMForAnsible.ps1"
 $LocalBootstrap = "$WorkDir\bootstrap.ps1"
@@ -76,6 +78,44 @@ function Sanitize-Args {
     return $sanitized
 }
 
+function Test-IsAllowedMainScriptUrl {
+    param([Parameter(Mandatory)][string]$Url)
+
+    return (
+        $Url -match '^https://raw\.githubusercontent\.com/lasubp/Configure-WinRMForAnsible/.+\.ps1$'
+    )
+}
+
+function Assert-MainScriptSourceAllowed {
+    if (-not (Test-IsAllowedMainScriptUrl -Url $MainURL)) {
+        throw "MainURL is not allowed. Use HTTPS raw.githubusercontent.com URL for this repository."
+    }
+}
+
+function Assert-MainScriptIntegrity {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not $ExpectedMainSHA256) {
+        Write-BootstrapLog -Level Info -Message "ExpectedMainSHA256 is empty; running in auto-update mode without hash pinning."
+        return
+    }
+
+    $actual = (Get-FileHash -Path $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()
+    $expected = $ExpectedMainSHA256.ToUpperInvariant()
+
+    if ($actual -ne $expected) {
+        throw "Main script SHA256 mismatch. Expected=$expected Actual=$actual"
+    }
+
+    Write-BootstrapLog -Level Info -Message "Main script SHA256 verified."
+}
+
+function Download-MainScript {
+    Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
+    Assert-MainScriptIntegrity -Path $LocalMain
+    Write-BootstrapLog -Level Info -Message "Downloaded main script at '$LocalMain'"
+}
+
 # Raw, tokenized arguments as PowerShell received them
 $ForwardArgs = (
     $args | ForEach-Object {
@@ -91,6 +131,14 @@ $script:IsSystem = Test-IsSystem
 $script:IsAdmin = Test-IsAdmin
 Initialize-BootstrapLog
 
+try {
+    Assert-MainScriptSourceAllowed
+}
+catch {
+    Write-BootstrapLog -Level Error -Message "Bootstrap configuration error: $($_.Exception.Message)"
+    throw
+}
+
 $safeArgs = Sanitize-Args -ArgsText $ForwardArgs
 Write-BootstrapLog -Level Info -Message "Bootstrap start. User=$env:USERNAME IsAdmin=$script:IsAdmin IsSystem=$script:IsSystem"
 if ($safeArgs) {
@@ -102,8 +150,7 @@ if ($safeArgs) {
 # -----------------------------------------
 if ($script:IsSystem) {
     try {
-        Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
-        Write-BootstrapLog -Level Info -Message "Downloaded main script to '$LocalMain'"
+        Download-MainScript
         powershell.exe -NoProfile -ExecutionPolicy Bypass `
             -File $LocalMain $ForwardArgs
         Write-BootstrapLog -Level Info -Message "Main script executed."
@@ -156,8 +203,7 @@ if ($script:IsAdmin) {
     Write-BootstrapLog -Level Info -Message "Removed launcher at '$Launcher'"
 
     # Download main script fresh
-    Invoke-WebRequest -Uri $MainURL -OutFile $LocalMain -UseBasicParsing -ErrorAction Stop
-    Write-BootstrapLog -Level Info -Message "Downloaded main script to '$LocalMain'"
+    Download-MainScript
 
     $Action = New-ScheduledTaskAction `
         -Execute "powershell.exe" `
