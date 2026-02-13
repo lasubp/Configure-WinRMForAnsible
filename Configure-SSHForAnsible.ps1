@@ -25,6 +25,7 @@ param(
     [string]$LogFormat = 'text',
     [switch]$DisableEventLog,
     [switch]$FriendlyErrors = $true,
+    [switch]$UsePowerShellErrors,
     [switch]$NewUser,
     [string]$ServiceUserName = "ansible_ssh",
     [string]$ServiceUserPass,
@@ -41,7 +42,7 @@ $script:LogFilePath = $null
 $script:LogPath = $LogPath
 $script:LogFormat = $LogFormat
 $script:DisableEventLog = $DisableEventLog
-$script:FriendlyErrors = $FriendlyErrors
+$script:FriendlyErrors = if ($UsePowerShellErrors) { $false } else { $FriendlyErrors }
 $script:ExitCode = 0
 
 $script:IsAdmin = ([Security.Principal.WindowsPrincipal] `

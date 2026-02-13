@@ -109,7 +109,7 @@ Options:
 ### OpenSSH script
 
 - Default log file (elevated runs only): `C:\ProgramData\Configure-SSHForAnsible\Configure-SSHForAnsible.log`
-- Same logging options as the main script (`-LogPath`, `-LogFormat`, `-DisableEventLog`, `-FriendlyErrors`).
+- Logging options: `-LogPath`, `-LogFormat`, `-DisableEventLog`, `-UsePowerShellErrors` (preferred), and legacy `-FriendlyErrors`.
 
 ### Bootstrap
 
@@ -135,6 +135,7 @@ Options:
 | `-LogFormat` | `text` or `json` | `text` |
 | `-DisableEventLog` | Disable Event Viewer logging | `$false` |
 | `-FriendlyErrors` | Friendly console errors | `$true` |
+| `-UsePowerShellErrors` | Use native PowerShell error records (overrides `-FriendlyErrors`) | `$false` |
 
 ## Parameters (OpenSSH script)
 
