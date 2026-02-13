@@ -13,9 +13,9 @@
 
 param(
     [int]$Port = 22,
-    [switch]$UsePublicKeyOnly = $false,
-    [switch]$AllowPasswordAuth = $true,
-    [switch]$AllowSftp = $true,
+    [switch]$UsePublicKeyOnly,
+    [switch]$NoPasswordAuth,
+    [switch]$NoSftp,
     [string[]]$AllowUsers,
     [string]$PublicKeyFile,
     [string]$AuthorizedKeysPath,
@@ -24,8 +24,7 @@ param(
     [ValidateSet('text','json')]
     [string]$LogFormat = 'text',
     [switch]$DisableEventLog,
-    [switch]$FriendlyErrors = $true,
-    [switch]$UsePowerShellErrors,
+    [switch]$FullErrors,
     [switch]$NewUser,
     [string]$ServiceUserName = "ansible_ssh",
     [string]$ServiceUserPass,
@@ -42,7 +41,7 @@ $script:LogFilePath = $null
 $script:LogPath = $LogPath
 $script:LogFormat = $LogFormat
 $script:DisableEventLog = $DisableEventLog
-$script:FriendlyErrors = if ($UsePowerShellErrors) { $false } else { $FriendlyErrors }
+$script:FriendlyErrors = -not $FullErrors
 $script:ExitCode = 0
 
 $script:IsAdmin = ([Security.Principal.WindowsPrincipal] `
@@ -937,8 +936,11 @@ if (-not $script:IsAdmin) {
 }
 
 if ($UsePublicKeyOnly) {
-    $AllowPasswordAuth = $false
+    $NoPasswordAuth = $true
 }
+
+$AllowPasswordAuthEffective = -not $NoPasswordAuth
+$AllowSftpEffective = -not $NoSftp
 
 if ($NewUser) {
     New-AnsibleServiceUser `
@@ -956,9 +958,9 @@ $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
 Set-SSHDConfig `
     -ConfigPath $sshdConfig `
     -Port $Port `
-    -PasswordAuth:$AllowPasswordAuth `
+    -PasswordAuth:$AllowPasswordAuthEffective `
     -PubkeyAuth:$true `
-    -AllowSftp:$AllowSftp `
+    -AllowSftp:$AllowSftpEffective `
     -AllowUsers $AllowUsers
 
 Set-SSHHostKeys
@@ -974,9 +976,9 @@ catch {
         Set-SSHDConfig `
             -ConfigPath $sshdConfig `
             -Port $Port `
-            -PasswordAuth:$AllowPasswordAuth `
+            -PasswordAuth:$AllowPasswordAuthEffective `
             -PubkeyAuth:$true `
-            -AllowSftp:$AllowSftp `
+            -AllowSftp:$AllowSftpEffective `
             -AllowUsers $AllowUsers
         Set-SSHHostKeys
         Repair-OpenSSHDataPermissions -ConfigPath $sshdConfig
@@ -999,7 +1001,7 @@ Set-SSHDService -ApplyConfig
 
 Write-Log -Level Info -Message "=== OpenSSH configuration complete ==="
 Write-Log -Level Info -Message "Port: $Port"
-Write-Log -Level Info -Message "PasswordAuthentication: $AllowPasswordAuth"
+Write-Log -Level Info -Message "PasswordAuthentication: $AllowPasswordAuthEffective"
 Write-Log -Level Info -Message "PubkeyAuthentication: $true"
 Write-Log -Level Info -Message "AllowUsers: $(if ($AllowUsers) { $AllowUsers -join ',' } else { '(all)' })"
 

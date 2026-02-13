@@ -129,12 +129,12 @@ Options:
 - `-LogPath` to log to a custom path (any user-writable location).
 - `-LogFormat text|json` (default: `text`).
 - `-DisableEventLog` to skip Event Viewer logging.
-- `-FriendlyErrors:$false` to use PowerShell error records instead of friendly console messages.
+- `-FullErrors` to use native PowerShell error records instead of friendly console messages.
 
 ### OpenSSH script
 
 - Default log file (elevated runs only): `C:\ProgramData\Configure-SSHForAnsible\Configure-SSHForAnsible.log`
-- Logging options: `-LogPath`, `-LogFormat`, `-DisableEventLog`, `-UsePowerShellErrors` (preferred), and legacy `-FriendlyErrors`.
+- Logging options: `-LogPath`, `-LogFormat`, `-DisableEventLog`, `-FullErrors`.
 
 ### Bootstrap
 
@@ -150,7 +150,7 @@ Options:
 | `-UseHTTPS` | Enable HTTPS listener and certificate management | Disabled |
 | `-Port` | Custom port (5985 HTTP / 5986 HTTPS) | Auto |
 | `-TrustedHosts` | TrustedHosts value | `*` |
-| `-AllowUnencrypted` | Allow unencrypted traffic (HTTP only) | `$true` |
+| `-EncryptedOnly` | Disable unencrypted traffic for HTTP mode | `$false` |
 | `-SkipNetworkFix` | Skip Public -> Private network change | `$false` |
 | `-EnableCredSSP` | Enable CredSSP authentication | `$false` |
 | `-NewUser` | Create a local service user | `$false` |
@@ -160,8 +160,7 @@ Options:
 | `-LogPath` | Custom log file path | — |
 | `-LogFormat` | `text` or `json` | `text` |
 | `-DisableEventLog` | Disable Event Viewer logging | `$false` |
-| `-FriendlyErrors` | Friendly console errors | `$true` |
-| `-UsePowerShellErrors` | Use native PowerShell error records (overrides `-FriendlyErrors`) | `$false` |
+| `-FullErrors` | Use native PowerShell error records | `$false` |
 
 ## Parameters (OpenSSH script)
 
@@ -169,8 +168,8 @@ Options:
 | --- | --- | --- |
 | `-Port` | SSH port | `22` |
 | `-UsePublicKeyOnly` | Disable password auth | `$false` |
-| `-AllowPasswordAuth` | Allow password auth | `$true` |
-| `-AllowSftp` | Enable SFTP subsystem | `$true` |
+| `-NoPasswordAuth` | Disable password auth | `$false` |
+| `-NoSftp` | Disable SFTP subsystem | `$false` |
 | `-AllowUsers` | Restrict allowed users | — |
 | `-PublicKeyFile` | Public key to add to `authorized_keys` | — |
 | `-AuthorizedKeysPath` | Override `authorized_keys` path | — |
@@ -182,7 +181,7 @@ Options:
 | `-LogPath` | Custom log file path | — |
 | `-LogFormat` | `text` or `json` | `text` |
 | `-DisableEventLog` | Disable Event Viewer logging | `$false` |
-| `-FriendlyErrors` | Friendly console errors | `$true` |
+| `-FullErrors` | Use native PowerShell error records | `$false` |
 
 ## Example Ansible inventory (HTTPS)
 

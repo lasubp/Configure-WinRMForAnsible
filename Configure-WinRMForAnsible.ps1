@@ -19,14 +19,14 @@ param(
     [switch]$UseHTTPS,
     [string]$TrustedHosts = "*",
     [int]$Port,
-    [switch]$AllowUnencrypted = $true,
-    [switch]$SkipNetworkFix = $false,
-    [switch]$EnableCredSSP = $false,
+    [switch]$EncryptedOnly,
+    [switch]$SkipNetworkFix,
+    [switch]$EnableCredSSP,
     [string]$LogPath,
     [ValidateSet('text','json')]
     [string]$LogFormat = 'text',
     [switch]$DisableEventLog,
-    [switch]$FriendlyErrors = $true,
+    [switch]$FullErrors,
     # -------------------------------
     # Service user creation
     # -------------------------------
@@ -53,7 +53,7 @@ $script:LogFilePath = $null
 $script:LogPath = $LogPath
 $script:LogFormat = $LogFormat
 $script:DisableEventLog = $DisableEventLog
-$script:FriendlyErrors = $FriendlyErrors
+$script:FriendlyErrors = -not $FullErrors
 $script:ExitCode = 0
 
 # -------------------------------------------------------------------
@@ -520,6 +520,8 @@ if (-not $script:IsAdmin) {
     exit 1
 }
 
+$AllowUnencryptedEffective = -not $EncryptedOnly
+
 # -------------------------------------------------------------------
 # Preserve sign-in UX (conservative): detect pre-state BEFORE creating service user
 # -------------------------------------------------------------------
@@ -635,7 +637,7 @@ Set-RegistryValue `
     -Type DWord `
     -ChangeLabel 'AllowAutoConfig'
 
-if ($AllowUnencrypted) {
+if ($AllowUnencryptedEffective) {
     Set-RegistryValue `
         -Path $basePath `
         -Name 'AllowUnencryptedTraffic' `
@@ -935,7 +937,7 @@ try {
         Set-WSManValue 'WSMan:\localhost\Service\Auth\CredSSP' $false 'CredSSP disabled'
     }
 
-    if ($AllowUnencrypted -and -not $UseHTTPS) {
+    if ($AllowUnencryptedEffective -and -not $UseHTTPS) {
         try {
             Set-WSManValue 'WSMan:\localhost\Service\AllowUnencrypted' $true 'AllowUnencrypted'
         }
@@ -985,7 +987,7 @@ Restart-Service WinRM -Force
 Write-Log -Level Info -Message "=== WinRM configuration complete ($(if ($UseHTTPS) {'HTTPS'} else {'HTTP'})) (Public network compatible) ==="
 Write-Log -Level Info -Message "Port: $Port"
 Write-Log -Level Info -Message "TrustedHosts: $TrustedHosts"
-Write-Log -Level Info -Message "Unencrypted: $AllowUnencrypted"
+Write-Log -Level Info -Message "Unencrypted: $AllowUnencryptedEffective"
 Write-Log -Level Info -Message "Auth: Basic=$true, Negotiate=$true, CredSSP=$EnableCredSSP"
 if ($UseHTTPS) {
     $listenerText = winrm get winrm/config/Listener?Address=*+Transport=HTTPS 2>$null
