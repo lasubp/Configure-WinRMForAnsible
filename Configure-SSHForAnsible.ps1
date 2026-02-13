@@ -194,6 +194,98 @@ function Get-OpenSSHServerCapability {
     return Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction Stop | Select-Object -First 1
 }
 
+function Test-PendingReboot {
+    $checks = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending',
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired'
+    )
+
+    foreach ($path in $checks) {
+        if (Test-Path $path) { return $true }
+    }
+
+    try {
+        $sm = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations' -ErrorAction SilentlyContinue
+        if ($sm -and $sm.PendingFileRenameOperations) { return $true }
+    }
+    catch {}
+
+    return $false
+}
+
+function Get-OpenSSHBasePaths {
+    $paths = New-Object System.Collections.ArrayList
+
+    foreach ($p in @(
+        (Join-Path $env:SystemRoot 'System32\OpenSSH'),
+        (Join-Path $env:SystemRoot 'Sysnative\OpenSSH'),
+        (Join-Path $env:ProgramFiles 'OpenSSH'),
+        (Join-Path ${env:ProgramFiles(x86)} 'OpenSSH')
+    )) {
+        if ($p -and -not ($paths -contains $p)) {
+            [void]$paths.Add($p)
+        }
+    }
+
+    $sshdCmd = Get-Command sshd.exe -ErrorAction SilentlyContinue
+    if ($sshdCmd -and $sshdCmd.Source) {
+        $cmdDir = Split-Path -Parent $sshdCmd.Source
+        if ($cmdDir -and -not ($paths -contains $cmdDir)) {
+            [void]$paths.Add($cmdDir)
+        }
+    }
+
+    try {
+        $svc = Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction SilentlyContinue
+        if ($svc -and $svc.PathName) {
+            $rawPath = $svc.PathName.Trim()
+            $exePath = $rawPath
+            if ($exePath -match '^"([^"]+)"') {
+                $exePath = $Matches[1]
+            }
+            elseif ($exePath -match '^(\S+\.exe)\b') {
+                $exePath = $Matches[1]
+            }
+            $exePath = [Environment]::ExpandEnvironmentVariables($exePath)
+            if ($exePath) {
+                $svcDir = Split-Path -Parent $exePath
+                if ($svcDir -and -not ($paths -contains $svcDir)) {
+                    [void]$paths.Add($svcDir)
+                }
+            }
+        }
+    }
+    catch {}
+
+    return ,$paths
+}
+
+function Wait-OpenSSHBinaryReady {
+    param(
+        [Parameter(Mandatory)][string]$BinaryName,
+        [int]$TimeoutSeconds = 90
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $cmd = Get-Command $BinaryName -ErrorAction SilentlyContinue
+        if ($cmd -and (Test-Path $cmd.Source)) {
+            return $cmd.Source
+        }
+
+        foreach ($base in (Get-OpenSSHBasePaths)) {
+            $candidate = Join-Path $base $BinaryName
+            if (Test-Path $candidate) {
+                return $candidate
+            }
+        }
+
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    return $null
+}
+
 function Set-OpenSSHInstalled {
     param([switch]$ForceReinstall)
 
@@ -217,6 +309,23 @@ function Set-OpenSSHInstalled {
         else {
             Write-Log -Level Info -Message "OpenSSH.Server already installed."
         }
+
+        $sshdReady = Wait-OpenSSHBinaryReady -BinaryName 'sshd.exe' -TimeoutSeconds 120
+        $keygenReady = Wait-OpenSSHBinaryReady -BinaryName 'ssh-keygen.exe' -TimeoutSeconds 30
+
+        if (-not $sshdReady -or -not $keygenReady) {
+            if (-not $ForceReinstall) {
+                Write-Log -Level Warn -Message "OpenSSH binaries are missing after install check. Attempting one repair reinstall..."
+                Set-OpenSSHInstalled -ForceReinstall
+                return
+            }
+
+            $pendingReboot = Test-PendingReboot
+            if ($pendingReboot) {
+                throw "OpenSSH.Server is installed but required binaries are missing. A pending reboot was detected. Reboot Windows, then re-run this script."
+            }
+            throw "OpenSSH.Server is installed but required binaries are missing (sshd.exe/ssh-keygen.exe not discoverable). Reinstall OpenSSH manually or reboot and re-run."
+        }
     }
     catch {
         throw "Failed to install OpenSSH.Server: $($_.Exception.Message)"
@@ -224,10 +333,16 @@ function Set-OpenSSHInstalled {
 }
 
 function Get-SSHDExecutablePath {
-    $candidates = @(
-        (Join-Path $env:SystemRoot 'System32\OpenSSH\sshd.exe'),
-        (Join-Path $env:ProgramFiles 'OpenSSH\sshd.exe')
-    )
+    $candidates = New-Object System.Collections.ArrayList
+    foreach ($base in (Get-OpenSSHBasePaths)) {
+        [void]$candidates.Add((Join-Path $base 'sshd.exe'))
+    }
+
+    $cmd = Get-Command sshd.exe -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) {
+        [void]$candidates.Add($cmd.Source)
+    }
+
     foreach ($candidate in $candidates) {
         if ($candidate -and (Test-Path $candidate)) {
             return $candidate
@@ -237,10 +352,28 @@ function Get-SSHDExecutablePath {
 }
 
 function Get-SSHKeygenPath {
+    $candidates = New-Object System.Collections.ArrayList
+
     $sshdExe = Get-SSHDExecutablePath
-    if (-not $sshdExe) { return $null }
-    $candidate = Join-Path (Split-Path -Parent $sshdExe) 'ssh-keygen.exe'
-    if (Test-Path $candidate) { return $candidate }
+    if ($sshdExe) {
+        [void]$candidates.Add((Join-Path (Split-Path -Parent $sshdExe) 'ssh-keygen.exe'))
+    }
+
+    foreach ($base in (Get-OpenSSHBasePaths)) {
+        [void]$candidates.Add((Join-Path $base 'ssh-keygen.exe'))
+    }
+
+    $cmd = Get-Command ssh-keygen.exe -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) {
+        [void]$candidates.Add($cmd.Source)
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return $candidate
+        }
+    }
+
     return $null
 }
 function Set-SSHDConfigFile {
@@ -253,12 +386,11 @@ function Set-SSHDConfigFile {
         New-Item -ItemType Directory -Path $configDir -Force | Out-Null
     }
 
-    $defaults = @(
-        (Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config_default'),
-        (Join-Path $env:SystemRoot 'System32\OpenSSH\sshd_config'),
-        (Join-Path $env:ProgramFiles 'OpenSSH\sshd_config_default'),
-        (Join-Path $env:ProgramFiles 'OpenSSH\sshd_config')
-    )
+    $defaults = New-Object System.Collections.ArrayList
+    foreach ($base in (Get-OpenSSHBasePaths)) {
+        [void]$defaults.Add((Join-Path $base 'sshd_config_default'))
+        [void]$defaults.Add((Join-Path $base 'sshd_config'))
+    }
 
     foreach ($defaultPath in $defaults) {
         if ($defaultPath -and (Test-Path $defaultPath)) {
