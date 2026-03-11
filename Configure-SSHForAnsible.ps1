@@ -191,7 +191,22 @@ function Get-ExitHex {
 }
 
 function Get-OpenSSHServerCapability {
-    return Get-WindowsCapability -Online -Name 'OpenSSH.Server*' -ErrorAction Stop | Select-Object -First 1
+    $queries = @(
+        'OpenSSH.Server~~~~0.0.1.0',
+        'OpenSSH.Server*'
+    )
+
+    foreach ($name in $queries) {
+        try {
+            $cap = Get-WindowsCapability -Online -Name $name -ErrorAction Stop | Select-Object -First 1
+            if ($cap) { return $cap }
+        }
+        catch {
+            # Keep probing. Some builds throw "Element not found" for wildcard/exact query variants.
+        }
+    }
+
+    return $null
 }
 
 function Test-PendingReboot {
@@ -286,14 +301,42 @@ function Wait-OpenSSHBinaryReady {
     return $null
 }
 
+function Install-OpenSSHServerCapability {
+    param([string]$CapabilityName = 'OpenSSH.Server~~~~0.0.1.0')
+
+    try {
+        Add-WindowsCapability -Online -Name $CapabilityName -ErrorAction Stop | Out-Null
+        return
+    }
+    catch {
+        $addMsg = $_.Exception.Message
+        Write-Log -Level Warn -Message "Add-WindowsCapability failed for '$CapabilityName': $addMsg. Trying DISM fallback..."
+    }
+
+    $dismOutput = & dism.exe /Online /Add-Capability "/CapabilityName:$CapabilityName" /NoRestart 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        $details = (($dismOutput | Where-Object { $_ }) -join ' | ')
+        if (-not $details) { $details = "DISM exited with code $LASTEXITCODE" }
+        if ($details -match 'Error:\s*1168|Element not found') {
+            throw "[OpenSSHPayloadMissing] DISM could not find capability payload '$CapabilityName' (Error 1168 / Element not found)."
+        }
+        throw "DISM capability install failed for '$CapabilityName': $details"
+    }
+}
+
 function Set-OpenSSHInstalled {
     param([switch]$ForceReinstall)
 
     Write-Log -Level Info -Message "Ensuring OpenSSH.Server is installed..."
     try {
         $cap = Get-OpenSSHServerCapability
-        if (-not $cap) {
-            throw "OpenSSH.Server capability not found."
+        $capName = if ($cap -and $cap.Name) { $cap.Name } else { 'OpenSSH.Server~~~~0.0.1.0' }
+        $sshdExisting = Get-SSHDExecutablePath
+        $keygenExisting = Get-SSHKeygenPath
+
+        if (-not $cap -and $sshdExisting -and $keygenExisting -and -not $ForceReinstall) {
+            Write-Log -Level Warn -Message "OpenSSH capability query returned nothing, but binaries already exist. Continuing with existing OpenSSH installation."
+            return
         }
 
         if ($ForceReinstall -and $cap.State -eq 'Installed') {
@@ -302,8 +345,9 @@ function Set-OpenSSHInstalled {
             $cap = Get-OpenSSHServerCapability
         }
 
-        if ($cap.State -ne 'Installed') {
-            Add-WindowsCapability -Online -Name $cap.Name -ErrorAction Stop | Out-Null
+        if (-not $cap -or $cap.State -ne 'Installed') {
+            Install-OpenSSHServerCapability -CapabilityName $capName
+            $cap = Get-OpenSSHServerCapability
             Write-Log -Level Info -Message "OpenSSH.Server installed."
         }
         else {
@@ -328,7 +372,11 @@ function Set-OpenSSHInstalled {
         }
     }
     catch {
-        throw "Failed to install OpenSSH.Server: $($_.Exception.Message)"
+        $msg = $_.Exception.Message
+        if ($msg -match '\[OpenSSHPayloadMissing\]|Error:\s*1168|Element not found') {
+            throw "Failed to install OpenSSH.Server: OpenSSH capability payload is missing/corrupted in Windows servicing. Run: 'DISM /Online /Cleanup-Image /RestoreHealth', then 'sfc /scannow', reboot, and re-run this script."
+        }
+        throw "Failed to install OpenSSH.Server: $msg"
     }
 }
 
