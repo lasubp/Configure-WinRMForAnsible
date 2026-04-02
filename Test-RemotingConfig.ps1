@@ -3,7 +3,7 @@
   One-command tester for Configure-SSHForAnsible.ps1 and Configure-WinRMForAnsible.ps1.
 
 .DESCRIPTION
-  - Creates temp password and SSH key files
+  - Creates temp password and public key files
   - Runs SSH and/or WinRM configuration scripts with full test argument sets
   - Prints basic service/connectivity checks
 
@@ -61,21 +61,17 @@ function New-TestPasswordFile {
 }
 
 function New-TestPublicKeyFile {
-    $keyBase = Join-Path $env:TEMP 'ansible_agent_key'
-    $pubPath = "$keyBase.pub"
-    if (Test-Path $pubPath) {
-        return $pubPath
+    $pubPath = Join-Path $env:TEMP 'ansible_agent_key.pub'
+    $publicKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOaY/sJgPvQMSA7tnMUL0lQyM4xVp3d4nGPMUu1bHvof ansible-test@localhost'
+    $existing = if (Test-Path $pubPath) {
+        (Get-Content -Path $pubPath -Raw -ErrorAction SilentlyContinue).Trim()
+    }
+    else {
+        $null
     }
 
-    $keygen = Join-Path $env:SystemRoot 'System32\OpenSSH\ssh-keygen.exe'
-    if (-not (Test-Path $keygen)) {
-        throw "ssh-keygen not found at '$keygen'."
-    }
-
-    # Use cmd /c to preserve empty passphrase argument reliably on PowerShell 5.1.
-    cmd /c "`"$keygen`" -t ed25519 -N `"`" -f `"$keyBase`""
-    if (-not (Test-Path $pubPath)) {
-        throw "Public key was not created: $pubPath"
+    if ($existing -ne $publicKey) {
+        $publicKey | Set-Content -Path $pubPath -Encoding Ascii
     }
 
     return $pubPath
@@ -98,7 +94,7 @@ function Invoke-SSHTest {
         '-UsePublicKeyOnly',
         '-NoPasswordAuth',
         '-NoSftp',
-        '-AllowUsers', "$ServiceUser,Administrator",
+        '-AllowUsers', $ServiceUser, 'Administrator',
         '-PublicKeyFile', $PubKeyFile,
         '-AuthorizedKeysPath', 'C:\ProgramData\ssh\administrators_authorized_keys',
         '-DefaultShell', "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe",
@@ -169,19 +165,19 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     throw "Run this script in an elevated PowerShell session."
 }
 
-$resolvedSSH = Resolve-ScriptPath -ProvidedPath $SSHScriptPath -LocalFileName 'Configure-SSHForAnsible.ps1' -FallbackPath 'C:\Users\User\Configure-SSHForAnsible.ps1'
-$resolvedWinRM = Resolve-ScriptPath -ProvidedPath $WinRMScriptPath -LocalFileName 'Configure-WinRMForAnsible.ps1' -FallbackPath 'C:\Users\User\Configure-WinRMForAnsible.ps1'
-
 Write-Step "Preparing temporary test files"
-$passFile = New-TestPasswordFile -Password $ServiceUserPassword
-$pubKeyFile = New-TestPublicKeyFile
 
 if ($Mode -in @('SSH','Both')) {
-    Invoke-SSHTest -ScriptPath $resolvedSSH -ServiceUser $ServiceUserName -PassFile $passFile -PubKeyFile $pubKeyFile -Port $SSHPort
+    $resolvedSSH = Resolve-ScriptPath -ProvidedPath $SSHScriptPath -LocalFileName 'Configure-SSHForAnsible.ps1' -FallbackPath 'C:\Users\User\Configure-SSHForAnsible.ps1'
+    $sshPassFile = New-TestPasswordFile -Password $ServiceUserPassword
+    $pubKeyFile = New-TestPublicKeyFile
+    Invoke-SSHTest -ScriptPath $resolvedSSH -ServiceUser $ServiceUserName -PassFile $sshPassFile -PubKeyFile $pubKeyFile -Port $SSHPort
 }
 
 if ($Mode -in @('WinRM','Both')) {
-    Invoke-WinRMTest -ScriptPath $resolvedWinRM -ServiceUser $ServiceUserName -PassFile $passFile -UseHTTPS:$UseHTTPSForWinRM
+    $resolvedWinRM = Resolve-ScriptPath -ProvidedPath $WinRMScriptPath -LocalFileName 'Configure-WinRMForAnsible.ps1' -FallbackPath 'C:\Users\User\Configure-WinRMForAnsible.ps1'
+    $winRMPassFile = New-TestPasswordFile -Password $ServiceUserPassword
+    Invoke-WinRMTest -ScriptPath $resolvedWinRM -ServiceUser $ServiceUserName -PassFile $winRMPassFile -UseHTTPS:$UseHTTPSForWinRM
 }
 
 Write-Step "Completed"

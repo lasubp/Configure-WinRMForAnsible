@@ -7,7 +7,7 @@
 - `Configure-SSHForAnsible.ps1`
 - `Configure-WinRMForAnsible.ps1`
 
-It creates temporary test password/key files, executes the selected config script(s), and prints basic verification checks.
+It creates temporary test password/public-key files, executes the selected config script(s), and prints basic verification checks.
 
 ## Prerequisites
 
