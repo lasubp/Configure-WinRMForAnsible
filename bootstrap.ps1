@@ -12,7 +12,7 @@ param(
 $ModeSettings = switch ($Mode) {
     'WinRM' {
         @{
-            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-WinRMForAnsible.ps1"
+            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-WinRMForAnsible.ps1"
             WorkDir  = "$env:ProgramData\Configure-WinRM"
             MainFile = 'Configure-WinRMForAnsible.ps1'
             TaskName = 'WinRM-SelfHeal'
@@ -21,7 +21,7 @@ $ModeSettings = switch ($Mode) {
     }
     'SSH' {
         @{
-            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/dev/Configure-SSHForAnsible.ps1"
+            MainURL  = "https://raw.githubusercontent.com/lasubp/Configure-WinRMForAnsible/refs/heads/main/Configure-SSHForAnsible.ps1"
             WorkDir  = "$env:ProgramData\Configure-SSH"
             MainFile = 'Configure-SSHForAnsible.ps1'
             TaskName = 'SSH-SelfHeal'
