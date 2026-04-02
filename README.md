@@ -7,27 +7,6 @@ PowerShell scripts to configure Windows hosts for Ansible over WinRM (HTTP or HT
 - `Configure-WinRMForAnsible.ps1`: main configuration script (requires Admin).
 - `Configure-SSHForAnsible.ps1`: OpenSSH configuration script (requires Admin).
 - `bootstrap.ps1`: helper that downloads the latest main script, optionally elevates, and creates a SYSTEM scheduled task for startup self-heal.
-- `Configure-AnsibleRemoting.ps1`: unified single-file entrypoint that combines all three modes (`WinRM`, `SSH`, `Bootstrap`).
-
-## Unified single-file usage
-
-### WinRM (default mode)
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Configure-AnsibleRemoting.ps1 -UseHTTPS -TrustedHosts "*"
-```
-
-### OpenSSH mode
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Configure-AnsibleRemoting.ps1 -Mode SSH -Port 22
-```
-
-### Bootstrap mode
-
-```powershell
-powershell.exe -ExecutionPolicy Bypass -File .\Configure-AnsibleRemoting.ps1 -Mode Bootstrap -UseHTTPS -TrustedHosts "*"
-```
 
 ## Requirements
 
