@@ -4,7 +4,7 @@ PowerShell scripts to configure Windows hosts for Ansible over WinRM (HTTP or HT
 
 ## Scripts
 
-- `Configure-WinRMForAnsible.ps1`: main configuration script (requires Admin).
+- `Configure-WinRMForAnsible.ps1`: main WinRM configuration script (requires Admin).
 - `Configure-SSHForAnsible.ps1`: OpenSSH configuration script (requires Admin).
 - `bootstrap.ps1`: helper that downloads the latest main script, optionally elevates, and creates a SYSTEM scheduled task for startup self-heal.
 
@@ -15,17 +15,28 @@ PowerShell scripts to configure Windows hosts for Ansible over WinRM (HTTP or HT
 - Must run main script as Administrator
 - OpenSSH Server capability (installed automatically by `Configure-SSHForAnsible.ps1`)
 
-## What the main script does
+## What the main script does (WinRM)
 
-- Applies WinRM policy registry keys
-- Enables and starts WinRM service (delayed auto)
-- Creates HTTP or HTTPS listeners (self-signed cert for HTTPS if needed)
+- Applies persistent WinRM policy registry keys and service settings
+- Enables and starts WinRM service (delayed auto-start)
+- Creates HTTP or HTTPS listener (HTTPS generates/self-renews cert by default)
 - Adds firewall rules for all network profiles
-- Configures authentication (Basic + Negotiate; optional CredSSP)
-- Configures TrustedHosts (idempotent)
+- Configures authentication (Basic + Negotiate; optional CredSSP via `-EnableCredSSP`)
+- Configures TrustedHosts (idempotent; default `*`)
+- Optional local non-interactive service user creation (`-NewUser`, `-ServiceUserName`, `-ServiceUserPassFile`)
+- Optional lock-screen UX preservation for single-user desktop environment
+- Supports `-SkipNetworkFix` to avoid changing Public network profile
+- Supports `-EncryptedOnly` to disable unencrypted WinRM on HTTP mode
+- Structured logging to file and optional Event Log with `-LogPath`, `-LogFormat`, `-DisableEventLog`, `-FullErrors`
+
+## What the SSH script does (OpenSSH)
+
+- Ensures Windows in-box `OpenSSH.Server` capability is installed and runnable
+- Generates or repairs `sshd_config` and key files under `%ProgramData%\ssh`
+- Configures SSHd to match Ansible Windows/SSH best practices
+- Configures port, authentication, key-only mode, and allowed users via parameters
 - Optional local service user creation and hardening
-- Optional lock-screen UX preservation for single-user desktops
-- Logs to file and optionally Event Log
+- Structured logging to file and optional Event Log
 
 ## Usage (main script)
 
